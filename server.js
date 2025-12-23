@@ -379,6 +379,20 @@ app.post('/api/products/fetch', async (req, res) => {
       }))
     });
   } catch (error) {
+    console.error(`[${getTimestamp()}] Fetch error:`, error.message);
+    
+    // Check if it's an auth error and send Discord notification
+    const errorMsg = error.message.toLowerCase();
+    if (errorMsg.includes('unauthorized') || 
+        errorMsg.includes('401') || 
+        errorMsg.includes('403') ||
+        errorMsg.includes('token') ||
+        errorMsg.includes('auth') ||
+        errorMsg.includes('expired') ||
+        errorMsg.includes('invalid')) {
+      sendTokenExpiredNotification(error.message);
+    }
+    
     res.status(500).json({ error: error.message });
   }
 });
@@ -416,6 +430,20 @@ app.post('/api/products/add', async (req, res) => {
       watchedSizes: watchedSizes.map(id => sizeMapping[id]?.size || id)
     });
   } catch (error) {
+    console.error(`[${getTimestamp()}] Add product error:`, error.message);
+    
+    // Check if it's an auth error and send Discord notification
+    const errorMsg = error.message.toLowerCase();
+    if (errorMsg.includes('unauthorized') || 
+        errorMsg.includes('401') || 
+        errorMsg.includes('403') ||
+        errorMsg.includes('token') ||
+        errorMsg.includes('auth') ||
+        errorMsg.includes('expired') ||
+        errorMsg.includes('invalid')) {
+      sendTokenExpiredNotification(error.message);
+    }
+    
     res.status(500).json({ error: error.message });
   }
 });
