@@ -574,11 +574,34 @@
 
   <div class="card" style="margin-top: 32px;">
     <details class="token-section">
-      <summary>Paramètres du token</summary>
-      <textarea id="tokenInput" placeholder="Collez votre token ici (sans Bearer)..."></textarea>
+      <summary>Paramètres des tokens</summary>
+      
+      <div class="token-status" id="tokenStatus"></div>
+      
+      <div class="form-group" style="margin-top: 12px;">
+        <label style="font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: rgba(255,255,255,0.5);">Refresh Token (pour auto-refresh)</label>
+        <textarea id="refreshTokenInput" placeholder="Collez votre refresh_token ici..." style="height: 80px;"></textarea>
+      </div>
+      
+      <button class="btn btn-primary" onclick="updateRefreshToken()" style="margin-bottom: 12px;">
+        Activer l'auto-refresh
+      </button>
+      
       <div class="divider"></div>
+      
+      <div class="form-group">
+        <label style="font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: rgba(255,255,255,0.5);">Access Token (manuel)</label>
+        <textarea id="tokenInput" placeholder="Collez votre access_token ici (sans Bearer)..." style="height: 60px;"></textarea>
+      </div>
+      
       <button class="btn btn-secondary" onclick="updateToken()">
-        Mettre à jour
+        Mettre à jour manuellement
+      </button>
+      
+      <div class="divider"></div>
+      
+      <button class="btn btn-secondary" onclick="triggerRefresh()">
+        🔄 Rafraîchir maintenant
       </button>
     </details>
   </div>
@@ -841,8 +864,86 @@
       }
     }
 
+    async function updateRefreshToken() {
+      const refreshToken = document.getElementById('refreshTokenInput').value.trim();
+      if (!refreshToken) {
+        showToast('Veuillez entrer un refresh token', true);
+        return;
+      }
+
+      try {
+        const response = await fetch('/api/config/token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refreshToken })
+        });
+
+        if (response.ok) {
+          showToast('Auto-refresh activé! Token rafraîchi toutes les 2h');
+          document.getElementById('refreshTokenInput').value = '';
+          updateTokenStatus();
+        } else {
+          throw new Error('Erreur');
+        }
+      } catch (error) {
+        showToast('Erreur lors de la mise à jour', true);
+      }
+    }
+
+    async function triggerRefresh() {
+      try {
+        showToast('Rafraîchissement en cours...');
+        const response = await fetch('/api/config/refresh', { method: 'POST' });
+        const data = await response.json();
+
+        if (response.ok) {
+          showToast('Token rafraîchi avec succès!');
+          updateTokenStatus();
+        } else {
+          showToast(data.error || 'Échec du rafraîchissement', true);
+        }
+      } catch (error) {
+        showToast('Erreur lors du rafraîchissement', true);
+      }
+    }
+
+    async function updateTokenStatus() {
+      try {
+        const response = await fetch('/health');
+        const data = await response.json();
+        
+        const statusEl = document.getElementById('tokenStatus');
+        if (data.tokenAutoRefresh) {
+          const lastRefresh = data.lastTokenRefresh ? new Date(data.lastTokenRefresh).toLocaleString('fr-FR') : 'Jamais';
+          statusEl.innerHTML = `
+            <div style="background: rgba(74, 222, 128, 0.1); border: 1px solid rgba(74, 222, 128, 0.3); border-radius: 8px; padding: 12px; margin-bottom: 12px;">
+              <div style="color: #4ade80; font-weight: 500; font-size: 12px;">✅ Auto-refresh actif</div>
+              <div style="color: rgba(255,255,255,0.5); font-size: 11px; margin-top: 4px;">Dernier refresh: ${lastRefresh}</div>
+            </div>
+          `;
+        } else if (data.hasRefreshToken) {
+          statusEl.innerHTML = `
+            <div style="background: rgba(251, 191, 36, 0.1); border: 1px solid rgba(251, 191, 36, 0.3); border-radius: 8px; padding: 12px; margin-bottom: 12px;">
+              <div style="color: #fbbf24; font-weight: 500; font-size: 12px;">⏸️ Refresh token configuré</div>
+            </div>
+          `;
+        } else {
+          statusEl.innerHTML = `
+            <div style="background: rgba(248, 113, 113, 0.1); border: 1px solid rgba(248, 113, 113, 0.3); border-radius: 8px; padding: 12px; margin-bottom: 12px;">
+              <div style="color: #f87171; font-weight: 500; font-size: 12px;">⚠️ Aucun refresh token</div>
+              <div style="color: rgba(255,255,255,0.5); font-size: 11px; margin-top: 4px;">Configurez-le pour l'auto-refresh</div>
+            </div>
+          `;
+        }
+      } catch (error) {
+        console.error('Error fetching token status:', error);
+      }
+    }
+
     loadMonitoredProducts();
+    updateTokenStatus();
     setInterval(loadMonitoredProducts, 30000);
+    setInterval(updateTokenStatus, 60000);
   </script>
 </body>
 </html>

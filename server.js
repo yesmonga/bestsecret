@@ -13,8 +13,15 @@ const CONFIG = {
   checkoutUrl: "https://www.bestsecret.com/cart.htm",
   cartReservationMinutes: 20,
   checkIntervalMs: 60 * 1000,
-  authorization: process.env.BESTSECRET_TOKEN || ""
+  authorization: process.env.BESTSECRET_TOKEN || "",
+  refreshToken: process.env.BESTSECRET_REFRESH_TOKEN || "",
+  clientId: "4oF5TQ5h5AKQCbODiQBBhrwiYf4WxcDy",
+  tokenRefreshIntervalMs: 120 * 60 * 1000 // Refresh every 2 hours (token expires in ~2.4 hours)
 };
+
+// Token refresh interval reference
+let tokenRefreshInterval = null;
+let lastTokenRefresh = null;
 
 // Store monitored products
 // Structure: { "code-color": { code, color, productInfo, sizeMapping, watchedSizes: Set, previousStock: {}, addedToCart: Set } }
@@ -259,6 +266,154 @@ function resetTokenExpiredFlag() {
   tokenExpiredNotificationSent = false;
 }
 
+// ============== TOKEN REFRESH LOGIC ==============
+
+async function refreshAccessToken() {
+  return new Promise((resolve, reject) => {
+    if (!CONFIG.refreshToken) {
+      reject(new Error('No refresh token available'));
+      return;
+    }
+
+    const postData = JSON.stringify({
+      grant_type: "refresh_token",
+      client_id: CONFIG.clientId,
+      refresh_token: CONFIG.refreshToken
+    });
+
+    const options = {
+      hostname: 'login.bestsecret.com',
+      port: 443,
+      path: '/oauth/token',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'User-Agent': 'BestSecret/2 CFNetwork/3860.300.31 Darwin/25.2.0',
+        'Accept': '*/*',
+        'Accept-Language': 'fr-FR,fr;q=0.9',
+        'Auth0-Client': 'eyJ2ZXJzaW9uIjoiMi41LjAiLCJuYW1lIjoiQXV0aDAuc3dpZnQiLCJlbnYiOnsic3dpZnQiOiI1LngiLCJpT1MiOiIyNi4yIn19',
+        'Content-Length': Buffer.byteLength(postData)
+      }
+    };
+
+    const req = https.request(options, (res) => {
+      let data = '';
+      res.on('data', (chunk) => { data += chunk; });
+      res.on('end', () => {
+        try {
+          const response = JSON.parse(data);
+          
+          if (res.statusCode !== 200 || !response.access_token) {
+            reject(new Error(`Token refresh failed: ${res.statusCode} - ${data}`));
+            return;
+          }
+          
+          resolve(response);
+        } catch (error) {
+          reject(new Error(`Parse error: ${error.message}`));
+        }
+      });
+    });
+
+    req.on('error', (error) => reject(error));
+    req.write(postData);
+    req.end();
+  });
+}
+
+function sendTokenRefreshSuccessNotification() {
+  const embed = {
+    title: "✅ TOKEN RAFRAÎCHI",
+    color: 0x22c55e,
+    description: "Le token BestSecret a été automatiquement rafraîchi.",
+    fields: [
+      { name: "⏰ Prochain rafraîchissement", value: "Dans ~2 heures", inline: false }
+    ],
+    footer: { text: "BestSecret Monitor - Auto Refresh" },
+    timestamp: new Date().toISOString()
+  };
+
+  return sendDiscordWebhook({
+    embeds: [embed]
+  });
+}
+
+function sendTokenRefreshFailedNotification(errorMessage) {
+  const embed = {
+    title: "❌ ÉCHEC RAFRAÎCHISSEMENT TOKEN",
+    color: 0xf87171,
+    description: "Le rafraîchissement automatique du token a échoué. Intervention manuelle requise.",
+    fields: [
+      { name: "❌ Erreur", value: `\`${errorMessage}\``, inline: false },
+      { name: "🔧 Action requise", value: "Mettez à jour le refresh_token via l'interface web", inline: false }
+    ],
+    footer: { text: "BestSecret Monitor" },
+    timestamp: new Date().toISOString()
+  };
+
+  return sendDiscordWebhook({
+    content: "@everyone ❌ **ÉCHEC RAFRAÎCHISSEMENT - INTERVENTION REQUISE!**",
+    embeds: [embed]
+  });
+}
+
+async function performTokenRefresh() {
+  console.log(`[${getTimestamp()}] 🔄 Attempting token refresh...`);
+  
+  try {
+    const tokenData = await refreshAccessToken();
+    
+    // Update tokens in CONFIG
+    CONFIG.authorization = `Bearer ${tokenData.access_token}`;
+    if (tokenData.refresh_token) {
+      CONFIG.refreshToken = tokenData.refresh_token;
+    }
+    
+    lastTokenRefresh = new Date();
+    resetTokenExpiredFlag();
+    
+    console.log(`[${getTimestamp()}] ✅ Token refreshed successfully!`);
+    
+    await sendTokenRefreshSuccessNotification();
+    
+    return true;
+  } catch (error) {
+    console.error(`[${getTimestamp()}] ❌ Token refresh failed:`, error.message);
+    
+    await sendTokenRefreshFailedNotification(error.message);
+    
+    return false;
+  }
+}
+
+function startTokenRefresh() {
+  if (tokenRefreshInterval) {
+    console.log('Token refresh already running');
+    return;
+  }
+  
+  if (!CONFIG.refreshToken) {
+    console.log('⚠️ No refresh token configured - automatic refresh disabled');
+    return;
+  }
+  
+  console.log(`🔄 Token auto-refresh started (every ${CONFIG.tokenRefreshIntervalMs / 60000} minutes)`);
+  
+  // Refresh immediately on start
+  performTokenRefresh();
+  
+  // Then refresh every 2 hours
+  tokenRefreshInterval = setInterval(performTokenRefresh, CONFIG.tokenRefreshIntervalMs);
+}
+
+function stopTokenRefresh() {
+  if (tokenRefreshInterval) {
+    clearInterval(tokenRefreshInterval);
+    tokenRefreshInterval = null;
+    console.log('Token refresh stopped');
+  }
+}
+
 // ============== MONITORING LOGIC ==============
 
 function getTimestamp() {
@@ -496,16 +651,43 @@ app.post('/api/products/:key/reset', (req, res) => {
 
 // Update authorization token
 app.post('/api/config/token', (req, res) => {
-  const { token } = req.body;
+  const { token, refreshToken } = req.body;
   
-  if (!token) {
-    return res.status(400).json({ error: 'Token is required' });
+  if (!token && !refreshToken) {
+    return res.status(400).json({ error: 'Token or refreshToken is required' });
   }
   
-  CONFIG.authorization = token.startsWith('Bearer ') ? token : `Bearer ${token}`;
-  resetTokenExpiredFlag(); // Reset the expired notification flag
-  console.log(`[${getTimestamp()}] Token updated via API`);
-  res.json({ success: true, message: 'Token updated' });
+  if (token) {
+    CONFIG.authorization = token.startsWith('Bearer ') ? token : `Bearer ${token}`;
+    console.log(`[${getTimestamp()}] Access token updated via API`);
+  }
+  
+  if (refreshToken) {
+    CONFIG.refreshToken = refreshToken;
+    console.log(`[${getTimestamp()}] Refresh token updated via API`);
+    
+    // Restart token refresh if not running
+    if (!tokenRefreshInterval && CONFIG.refreshToken) {
+      startTokenRefresh();
+    }
+  }
+  
+  resetTokenExpiredFlag();
+  res.json({ success: true, message: 'Token(s) updated' });
+});
+
+// Endpoint to manually trigger token refresh
+app.post('/api/config/refresh', async (req, res) => {
+  try {
+    const success = await performTokenRefresh();
+    if (success) {
+      res.json({ success: true, message: 'Token refreshed successfully' });
+    } else {
+      res.status(500).json({ error: 'Token refresh failed' });
+    }
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // Serve the main page
@@ -526,6 +708,9 @@ app.get('/health', (req, res) => {
     uptimeSeconds: uptime,
     monitoredProducts: monitoredProducts.size,
     isMonitoring: !!monitoringInterval,
+    tokenAutoRefresh: !!tokenRefreshInterval,
+    lastTokenRefresh: lastTokenRefresh ? lastTokenRefresh.toISOString() : null,
+    hasRefreshToken: !!CONFIG.refreshToken,
     timestamp: new Date().toISOString()
   });
 });
@@ -548,4 +733,11 @@ app.listen(PORT, '0.0.0.0', () => {
 ║  Health check: /health or /ping                              ║
 ╚══════════════════════════════════════════════════════════════╝
   `);
+  
+  // Start automatic token refresh if refresh token is configured
+  if (CONFIG.refreshToken) {
+    startTokenRefresh();
+  } else {
+    console.log('⚠️ No BESTSECRET_REFRESH_TOKEN configured - automatic token refresh disabled');
+  }
 });
