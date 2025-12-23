@@ -408,13 +408,39 @@ app.get('/', (req, res) => {
   res.sendFile(__dirname + '/public/index.html');
 });
 
+// Health check endpoint for UptimeRobot
+app.get('/health', (req, res) => {
+  const uptime = process.uptime();
+  const hours = Math.floor(uptime / 3600);
+  const minutes = Math.floor((uptime % 3600) / 60);
+  const seconds = Math.floor(uptime % 60);
+  
+  res.json({
+    status: 'alive',
+    uptime: `${hours}h ${minutes}m ${seconds}s`,
+    uptimeSeconds: uptime,
+    monitoredProducts: monitoredProducts.size,
+    isMonitoring: !!monitoringInterval,
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Keep-alive ping endpoint (lightweight)
+app.get('/ping', (req, res) => {
+  res.send('pong');
+});
+
+// Store server start time
+const serverStartTime = new Date();
+
 // Start server
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`
 ╔══════════════════════════════════════════════════════════════╗
 ║  🔍 BestSecret Stock Monitor - Web Interface                 ║
 ║  Server running on port ${String(PORT).padEnd(37)} ║
-║  Open http://localhost:${String(PORT).padEnd(38)} ║
+║  Started at: ${serverStartTime.toISOString().padEnd(48)} ║
+║  Health check: /health or /ping                              ║
 ╚══════════════════════════════════════════════════════════════╝
   `);
 });
