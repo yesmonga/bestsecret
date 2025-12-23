@@ -3,7 +3,10 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>BestSecret Monitor</title>
+  <title>BESTSECRET Monitor</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
   <style>
     * {
       box-sizing: border-box;
@@ -12,93 +15,133 @@
     }
 
     body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: #1a1a1a;
       min-height: 100vh;
-      color: #fff;
-      padding: 16px;
-      padding-bottom: 100px;
+      color: #ffffff;
+      padding: 20px;
+      padding-bottom: 120px;
     }
 
     .header {
       text-align: center;
-      padding: 20px 0;
-      margin-bottom: 20px;
+      padding: 40px 0;
+      margin-bottom: 32px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.06);
     }
 
-    .header h1 {
-      font-size: 24px;
-      background: linear-gradient(90deg, #00d4ff, #7b2cbf);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-      background-clip: text;
+    .logo {
+      font-size: 20px;
+      font-weight: 500;
+      letter-spacing: 10px;
+      color: #ffffff;
+    }
+
+    .header .subtitle {
+      font-size: 10px;
+      letter-spacing: 4px;
+      color: rgba(255, 255, 255, 0.35);
+      text-transform: uppercase;
+      margin-top: 12px;
     }
 
     .header .status {
-      margin-top: 8px;
-      font-size: 14px;
-      color: #888;
+      margin-top: 20px;
+      font-size: 11px;
+      letter-spacing: 1px;
+      color: rgba(255, 255, 255, 0.3);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+
+    .status-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.2);
+    }
+
+    .status.active .status-dot {
+      background: #4ade80;
+      box-shadow: 0 0 12px rgba(74, 222, 128, 0.6);
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
     }
 
     .status.active {
-      color: #00ff88;
+      color: rgba(255, 255, 255, 0.5);
     }
 
     .card {
-      background: rgba(255, 255, 255, 0.05);
+      background: #222222;
       border-radius: 16px;
-      padding: 20px;
-      margin-bottom: 16px;
-      border: 1px solid rgba(255, 255, 255, 0.1);
-      backdrop-filter: blur(10px);
+      padding: 28px;
+      margin-bottom: 20px;
+      border: 1px solid rgba(255, 255, 255, 0.04);
     }
 
     .card h2 {
-      font-size: 18px;
-      margin-bottom: 16px;
-      color: #00d4ff;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 3px;
+      text-transform: uppercase;
+      margin-bottom: 24px;
+      color: rgba(255, 255, 255, 0.4);
     }
 
     .form-group {
-      margin-bottom: 16px;
+      margin-bottom: 20px;
     }
 
     .form-group label {
       display: block;
-      font-size: 14px;
-      color: #aaa;
-      margin-bottom: 8px;
+      font-size: 10px;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      color: rgba(255, 255, 255, 0.35);
+      margin-bottom: 10px;
     }
 
     .form-group input {
       width: 100%;
-      padding: 14px 16px;
-      border-radius: 12px;
-      border: 1px solid rgba(255, 255, 255, 0.2);
-      background: rgba(255, 255, 255, 0.1);
+      padding: 18px 16px;
+      border-radius: 10px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      background: #1a1a1a;
       color: #fff;
-      font-size: 16px;
+      font-size: 15px;
+      font-family: 'Inter', sans-serif;
       outline: none;
-      transition: border-color 0.2s;
+      transition: all 0.3s ease;
     }
 
     .form-group input:focus {
-      border-color: #00d4ff;
+      border-color: rgba(255, 255, 255, 0.2);
+      background: #1d1d1d;
     }
 
     .form-group input::placeholder {
-      color: #666;
+      color: rgba(255, 255, 255, 0.15);
     }
 
     .btn {
       width: 100%;
-      padding: 16px;
-      border-radius: 12px;
+      padding: 18px;
+      border-radius: 10px;
       border: none;
-      font-size: 16px;
+      font-size: 11px;
       font-weight: 600;
+      letter-spacing: 3px;
+      text-transform: uppercase;
       cursor: pointer;
-      transition: transform 0.1s, opacity 0.2s;
+      font-family: 'Inter', sans-serif;
+      transition: all 0.3s ease;
     }
 
     .btn:active {
@@ -106,34 +149,49 @@
     }
 
     .btn:disabled {
-      opacity: 0.5;
+      opacity: 0.4;
       cursor: not-allowed;
     }
 
     .btn-primary {
-      background: linear-gradient(90deg, #00d4ff, #7b2cbf);
-      color: #fff;
+      background: #ffffff;
+      color: #1a1a1a;
+    }
+
+    .btn-primary:hover {
+      background: rgba(255, 255, 255, 0.9);
     }
 
     .btn-success {
-      background: linear-gradient(90deg, #00ff88, #00d4ff);
-      color: #000;
+      background: #4ade80;
+      color: #0a0a0a;
     }
 
     .btn-danger {
-      background: linear-gradient(90deg, #ff4757, #ff6b81);
-      color: #fff;
+      background: transparent;
+      color: #f87171;
+      border: 1px solid rgba(248, 113, 113, 0.3);
+    }
+
+    .btn-danger:hover {
+      background: rgba(248, 113, 113, 0.1);
     }
 
     .btn-secondary {
-      background: rgba(255, 255, 255, 0.1);
-      color: #fff;
-      border: 1px solid rgba(255, 255, 255, 0.2);
+      background: transparent;
+      color: rgba(255, 255, 255, 0.6);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+
+    .btn-secondary:hover {
+      background: rgba(255, 255, 255, 0.05);
     }
 
     .product-preview {
       display: none;
-      margin-top: 20px;
+      margin-top: 28px;
+      padding-top: 28px;
+      border-top: 1px solid rgba(255, 255, 255, 0.06);
     }
 
     .product-preview.visible {
@@ -141,129 +199,194 @@
     }
 
     .product-info {
-      background: rgba(0, 212, 255, 0.1);
+      background: #1a1a1a;
       border-radius: 12px;
-      padding: 16px;
-      margin-bottom: 16px;
+      padding: 20px;
+      margin-bottom: 24px;
+      border: 1px solid rgba(255, 255, 255, 0.06);
+    }
+
+    .product-info .designer {
+      font-size: 10px;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      color: rgba(255, 255, 255, 0.4);
+      margin-bottom: 6px;
     }
 
     .product-info h3 {
       font-size: 16px;
-      margin-bottom: 8px;
+      font-weight: 500;
+      margin-bottom: 12px;
+      color: #ffffff;
     }
 
     .product-info .meta {
-      font-size: 14px;
-      color: #aaa;
+      font-size: 12px;
+      color: rgba(255, 255, 255, 0.4);
+    }
+
+    .product-info .price-row {
+      margin-top: 16px;
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
     }
 
     .product-info .price {
-      margin-top: 8px;
-      font-size: 18px;
-      color: #00ff88;
+      font-size: 20px;
+      font-weight: 600;
+      color: #ffffff;
     }
 
     .product-info .discount {
-      color: #ff6b81;
-      font-size: 14px;
+      font-size: 12px;
+      color: #4ade80;
+      font-weight: 500;
     }
 
-    .sizes-list {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
+    .section-label {
+      font-size: 10px;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      color: rgba(255, 255, 255, 0.35);
       margin-bottom: 16px;
     }
 
+    .sizes-list {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+      margin-bottom: 24px;
+    }
+
     .size-item {
-      flex: 1;
-      min-width: calc(50% - 5px);
-      padding: 14px;
-      border-radius: 12px;
-      background: rgba(255, 255, 255, 0.05);
-      border: 2px solid rgba(255, 255, 255, 0.1);
+      padding: 16px 12px;
+      border-radius: 10px;
+      background: #1a1a1a;
+      border: 1px solid rgba(255, 255, 255, 0.08);
       cursor: pointer;
-      transition: all 0.2s;
+      transition: all 0.2s ease;
       text-align: center;
     }
 
+    .size-item:hover {
+      border-color: rgba(255, 255, 255, 0.15);
+    }
+
     .size-item.selected {
-      border-color: #00d4ff;
-      background: rgba(0, 212, 255, 0.2);
+      border-color: #ffffff;
+      background: rgba(255, 255, 255, 0.05);
     }
 
     .size-item.out-of-stock {
-      border-color: #ff4757;
+      border-color: rgba(248, 113, 113, 0.3);
     }
 
     .size-item.in-stock {
-      border-color: #00ff88;
+      border-color: rgba(74, 222, 128, 0.3);
     }
 
     .size-item .size-name {
-      font-size: 18px;
+      font-size: 15px;
       font-weight: 600;
+      color: #ffffff;
     }
 
     .size-item .stock-info {
-      font-size: 12px;
-      color: #888;
-      margin-top: 4px;
+      font-size: 10px;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      color: rgba(255, 255, 255, 0.3);
+      margin-top: 6px;
     }
 
     .size-item.out-of-stock .stock-info {
-      color: #ff6b81;
+      color: #f87171;
     }
 
     .size-item.in-stock .stock-info {
-      color: #00ff88;
+      color: #4ade80;
     }
 
     .monitored-products {
-      margin-top: 20px;
+      margin-top: 8px;
     }
 
     .monitored-product {
-      background: rgba(255, 255, 255, 0.05);
+      background: #222222;
       border-radius: 12px;
-      padding: 16px;
+      padding: 20px;
       margin-bottom: 12px;
-      border-left: 4px solid #00d4ff;
+      border: 1px solid rgba(255, 255, 255, 0.04);
+      position: relative;
+    }
+
+    .monitored-product::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      width: 3px;
+      background: #4ade80;
+      border-radius: 3px 0 0 3px;
+    }
+
+    .monitored-product .designer {
+      font-size: 10px;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      color: rgba(255, 255, 255, 0.4);
+      margin-bottom: 4px;
     }
 
     .monitored-product h4 {
       font-size: 14px;
+      font-weight: 500;
+      margin-bottom: 12px;
+      color: #ffffff;
+    }
+
+    .monitored-product .info-row {
+      display: flex;
+      gap: 16px;
       margin-bottom: 8px;
+    }
+
+    .monitored-product .info-item {
+      font-size: 11px;
+    }
+
+    .monitored-product .info-label {
+      color: rgba(255, 255, 255, 0.35);
+      margin-right: 6px;
     }
 
     .monitored-product .watching {
-      font-size: 12px;
-      color: #00ff88;
-      margin-bottom: 8px;
+      color: #4ade80;
     }
 
     .monitored-product .added {
-      font-size: 12px;
-      color: #ff6b81;
-      margin-bottom: 8px;
+      color: #fbbf24;
     }
 
     .monitored-product .actions {
       display: flex;
-      gap: 8px;
-      margin-top: 12px;
+      gap: 10px;
+      margin-top: 16px;
     }
 
     .monitored-product .actions button {
       flex: 1;
-      padding: 10px;
-      font-size: 12px;
+      padding: 12px;
+      font-size: 10px;
     }
 
     .loading {
       display: none;
       text-align: center;
-      padding: 20px;
+      padding: 32px;
     }
 
     .loading.visible {
@@ -271,13 +394,20 @@
     }
 
     .spinner {
-      width: 40px;
-      height: 40px;
-      border: 3px solid rgba(255, 255, 255, 0.1);
-      border-top-color: #00d4ff;
+      width: 32px;
+      height: 32px;
+      border: 2px solid rgba(255, 255, 255, 0.1);
+      border-top-color: #ffffff;
       border-radius: 50%;
-      animation: spin 1s linear infinite;
-      margin: 0 auto 10px;
+      animation: spin 0.8s linear infinite;
+      margin: 0 auto 16px;
+    }
+
+    .loading-text {
+      font-size: 11px;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      color: rgba(255, 255, 255, 0.4);
     }
 
     @keyframes spin {
@@ -286,144 +416,179 @@
 
     .toast {
       position: fixed;
-      bottom: 20px;
+      bottom: 24px;
       left: 50%;
-      transform: translateX(-50%);
-      background: #00ff88;
-      color: #000;
-      padding: 14px 24px;
-      border-radius: 12px;
-      font-weight: 600;
+      transform: translateX(-50%) translateY(100px);
+      background: #ffffff;
+      color: #1a1a1a;
+      padding: 16px 28px;
+      border-radius: 10px;
+      font-size: 12px;
+      font-weight: 500;
+      letter-spacing: 1px;
       opacity: 0;
-      transition: opacity 0.3s;
+      transition: all 0.3s ease;
       z-index: 1000;
     }
 
     .toast.error {
-      background: #ff4757;
-      color: #fff;
+      background: #f87171;
+      color: #ffffff;
     }
 
     .toast.visible {
       opacity: 1;
+      transform: translateX(-50%) translateY(0);
     }
 
     .empty-state {
       text-align: center;
-      padding: 40px 20px;
-      color: #666;
+      padding: 48px 20px;
+      color: rgba(255, 255, 255, 0.25);
     }
 
     .empty-state .icon {
-      font-size: 48px;
+      font-size: 40px;
       margin-bottom: 16px;
+      opacity: 0.5;
+    }
+
+    .empty-state p {
+      font-size: 12px;
+      letter-spacing: 1px;
     }
 
     .section-title {
-      font-size: 14px;
-      color: #888;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 3px;
       text-transform: uppercase;
-      letter-spacing: 1px;
-      margin: 24px 0 12px;
+      color: rgba(255, 255, 255, 0.35);
+      margin: 32px 0 16px;
     }
 
     .token-section {
-      margin-top: 24px;
-      padding-top: 24px;
-      border-top: 1px solid rgba(255, 255, 255, 0.1);
+      margin-top: 8px;
     }
 
     .token-section summary {
       cursor: pointer;
-      color: #888;
-      font-size: 14px;
+      font-size: 11px;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      color: rgba(255, 255, 255, 0.35);
+      padding: 12px 0;
+      outline: none;
+      list-style: none;
+    }
+
+    .token-section summary::-webkit-details-marker {
+      display: none;
+    }
+
+    .token-section summary::before {
+      content: '+ ';
+    }
+
+    .token-section[open] summary::before {
+      content: '− ';
     }
 
     .token-section textarea {
       width: 100%;
-      height: 80px;
-      margin-top: 12px;
-      padding: 12px;
-      border-radius: 8px;
-      border: 1px solid rgba(255, 255, 255, 0.2);
-      background: rgba(255, 255, 255, 0.1);
+      height: 100px;
+      margin-top: 16px;
+      padding: 16px;
+      border-radius: 10px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      background: #1a1a1a;
       color: #fff;
-      font-size: 12px;
-      font-family: monospace;
+      font-size: 11px;
+      font-family: 'SF Mono', 'Monaco', monospace;
       resize: none;
+      outline: none;
+    }
+
+    .token-section textarea:focus {
+      border-color: rgba(255, 255, 255, 0.2);
+    }
+
+    .divider {
+      height: 1px;
+      background: rgba(255, 255, 255, 0.06);
+      margin: 24px 0;
     }
   </style>
 </head>
 <body>
   <div class="header">
-    <h1>🔍 BestSecret Monitor</h1>
-    <div class="status" id="monitorStatus">Chargement...</div>
+    <div class="logo">BESTSECRET</div>
+    <div class="subtitle">Stock Monitor</div>
+    <div class="status" id="monitorStatus">
+      <span class="status-dot"></span>
+      <span>Chargement...</span>
+    </div>
   </div>
 
-  <!-- Add Product Card -->
   <div class="card">
-    <h2>➕ Ajouter un produit</h2>
+    <h2>Ajouter un produit</h2>
     
     <div class="form-group">
       <label>Code produit</label>
-      <input type="text" id="productCode" placeholder="ex: 40444581" inputmode="numeric">
+      <input type="text" id="productCode" placeholder="40444581" inputmode="numeric">
     </div>
     
     <div class="form-group">
       <label>Code couleur</label>
-      <input type="text" id="colorCode" placeholder="ex: 000703715" inputmode="numeric">
+      <input type="text" id="colorCode" placeholder="000703715" inputmode="numeric">
     </div>
     
     <button class="btn btn-primary" id="fetchBtn" onclick="fetchProduct()">
-      🔎 Rechercher le produit
+      Rechercher
     </button>
 
     <div class="loading" id="fetchLoading">
       <div class="spinner"></div>
-      <div>Recherche en cours...</div>
+      <div class="loading-text">Recherche en cours</div>
     </div>
 
-    <!-- Product Preview -->
     <div class="product-preview" id="productPreview">
       <div class="product-info" id="productInfo"></div>
       
-      <div class="section-title">Sélectionnez les tailles à surveiller</div>
+      <div class="section-label">Sélectionner les tailles à surveiller</div>
       <div class="sizes-list" id="sizesList"></div>
       
       <button class="btn btn-success" id="addBtn" onclick="addProduct()">
-        ✅ Ajouter au monitoring
+        Ajouter au monitoring
       </button>
     </div>
   </div>
 
-  <!-- Monitored Products -->
   <div class="section-title">Produits surveillés</div>
   <div class="monitored-products" id="monitoredProducts">
     <div class="empty-state" id="emptyState">
-      <div class="icon">📦</div>
-      <div>Aucun produit surveillé</div>
+      <div class="icon">◇</div>
+      <p>Aucun produit surveillé</p>
     </div>
   </div>
 
-  <!-- Token Settings -->
-  <div class="card">
+  <div class="card" style="margin-top: 32px;">
     <details class="token-section">
-      <summary>⚙️ Paramètres du token</summary>
-      <textarea id="tokenInput" placeholder="Collez votre token Bearer ici..."></textarea>
-      <button class="btn btn-secondary" style="margin-top: 12px;" onclick="updateToken()">
-        Mettre à jour le token
+      <summary>Paramètres du token</summary>
+      <textarea id="tokenInput" placeholder="Collez votre token ici (sans Bearer)..."></textarea>
+      <div class="divider"></div>
+      <button class="btn btn-secondary" onclick="updateToken()">
+        Mettre à jour
       </button>
     </details>
   </div>
 
-  <!-- Toast -->
   <div class="toast" id="toast"></div>
 
   <script>
     let currentProduct = null;
     let selectedSizes = new Set();
 
-    // Show toast notification
     function showToast(message, isError = false) {
       const toast = document.getElementById('toast');
       toast.textContent = message;
@@ -431,7 +596,6 @@
       setTimeout(() => toast.className = 'toast', 3000);
     }
 
-    // Fetch product details
     async function fetchProduct() {
       const code = document.getElementById('productCode').value.trim();
       const color = document.getElementById('colorCode').value.trim();
@@ -470,20 +634,23 @@
       }
     }
 
-    // Display product preview
     function displayProductPreview(data) {
       const info = data.productInfo;
       
       document.getElementById('productInfo').innerHTML = `
-        <h3>${info.designer} - ${info.title}</h3>
-        <div class="meta">Couleur: ${info.color}</div>
-        <div class="price">${info.price} <span class="discount">${info.discount}</span></div>
+        <div class="designer">${info.designer || 'Designer'}</div>
+        <h3>${info.title || 'Produit'}</h3>
+        <div class="meta">${info.color || ''}</div>
+        <div class="price-row">
+          <span class="price">${info.price || ''}</span>
+          <span class="discount">${info.discount || ''}</span>
+        </div>
       `;
 
       const sizesList = document.getElementById('sizesList');
       sizesList.innerHTML = data.sizes.map(size => {
         const stockClass = size.stock > 0 ? 'in-stock' : 'out-of-stock';
-        const stockText = size.stock > 0 ? `${size.stock} en stock` : 'Rupture';
+        const stockText = size.stock > 0 ? `${size.stock} dispo` : 'Rupture';
         return `
           <div class="size-item ${stockClass}" data-id="${size.variantId}" onclick="toggleSize(this, '${size.variantId}')">
             <div class="size-name">${size.size}</div>
@@ -495,7 +662,6 @@
       document.getElementById('productPreview').classList.add('visible');
     }
 
-    // Toggle size selection
     function toggleSize(element, variantId) {
       if (selectedSizes.has(variantId)) {
         selectedSizes.delete(variantId);
@@ -506,7 +672,6 @@
       }
     }
 
-    // Add product to monitoring
     async function addProduct() {
       if (!currentProduct) return;
 
@@ -534,16 +699,14 @@
           throw new Error(data.error || 'Erreur lors de l\'ajout');
         }
 
-        showToast('Produit ajouté au monitoring! 🎉');
+        showToast('Produit ajouté au monitoring');
         
-        // Reset form
         document.getElementById('productCode').value = '';
         document.getElementById('colorCode').value = '';
         document.getElementById('productPreview').classList.remove('visible');
         currentProduct = null;
         selectedSizes.clear();
 
-        // Refresh list
         loadMonitoredProducts();
 
       } catch (error) {
@@ -553,7 +716,6 @@
       }
     }
 
-    // Load monitored products
     async function loadMonitoredProducts() {
       try {
         const response = await fetch('/api/products');
@@ -563,18 +725,18 @@
         const statusEl = document.getElementById('monitorStatus');
 
         if (data.isMonitoring) {
-          statusEl.textContent = `🟢 Monitoring actif (${data.products.length} produit${data.products.length > 1 ? 's' : ''})`;
+          statusEl.innerHTML = `<span class="status-dot"></span><span>Monitoring actif · ${data.products.length} produit${data.products.length > 1 ? 's' : ''}</span>`;
           statusEl.className = 'status active';
         } else {
-          statusEl.textContent = '⚪ Monitoring inactif';
+          statusEl.innerHTML = '<span class="status-dot"></span><span>Monitoring inactif</span>';
           statusEl.className = 'status';
         }
 
         if (data.products.length === 0) {
           container.innerHTML = `
             <div class="empty-state">
-              <div class="icon">📦</div>
-              <div>Aucun produit surveillé</div>
+              <div class="icon">◇</div>
+              <p>Aucun produit surveillé</p>
             </div>
           `;
           return;
@@ -593,13 +755,35 @@
 
           return `
             <div class="monitored-product">
-              <h4>${product.productInfo.designer} - ${product.productInfo.title}</h4>
-              <div class="meta" style="color: #888; font-size: 12px;">${product.productInfo.color} • ${product.productInfo.price}</div>
-              <div class="watching">👀 Surveillance: ${watchedSizeNames}</div>
-              ${addedSizeNames ? `<div class="added">🛒 Ajouté au panier: ${addedSizeNames}</div>` : ''}
+              <div class="designer">${product.productInfo.designer || ''}</div>
+              <h4>${product.productInfo.title || 'Produit'}</h4>
+              <div class="info-row">
+                <div class="info-item">
+                  <span class="info-label">Couleur</span>
+                  <span>${product.productInfo.color || '-'}</span>
+                </div>
+                <div class="info-item">
+                  <span class="info-label">Prix</span>
+                  <span>${product.productInfo.price || '-'}</span>
+                </div>
+              </div>
+              <div class="info-row">
+                <div class="info-item">
+                  <span class="info-label">Surveillance</span>
+                  <span class="watching">${watchedSizeNames}</span>
+                </div>
+              </div>
+              ${addedSizeNames ? `
+              <div class="info-row">
+                <div class="info-item">
+                  <span class="info-label">Ajouté au panier</span>
+                  <span class="added">${addedSizeNames}</span>
+                </div>
+              </div>
+              ` : ''}
               <div class="actions">
-                <button class="btn btn-secondary" onclick="resetProduct('${product.key}')">🔄 Reset</button>
-                <button class="btn btn-danger" onclick="removeProduct('${product.key}')">🗑️ Supprimer</button>
+                <button class="btn btn-secondary" onclick="resetProduct('${product.key}')">Reset</button>
+                <button class="btn btn-danger" onclick="removeProduct('${product.key}')">Supprimer</button>
               </div>
             </div>
           `;
@@ -610,7 +794,6 @@
       }
     }
 
-    // Remove product
     async function removeProduct(key) {
       if (!confirm('Supprimer ce produit du monitoring?')) return;
 
@@ -623,7 +806,6 @@
       }
     }
 
-    // Reset product cart tracking
     async function resetProduct(key) {
       try {
         await fetch(`/api/products/${encodeURIComponent(key)}/reset`, { method: 'POST' });
@@ -634,7 +816,6 @@
       }
     }
 
-    // Update token
     async function updateToken() {
       const token = document.getElementById('tokenInput').value.trim();
       if (!token) {
@@ -650,7 +831,7 @@
         });
 
         if (response.ok) {
-          showToast('Token mis à jour! ✅');
+          showToast('Token mis à jour');
           document.getElementById('tokenInput').value = '';
         } else {
           throw new Error('Erreur');
@@ -660,10 +841,7 @@
       }
     }
 
-    // Initial load
     loadMonitoredProducts();
-
-    // Refresh every 30 seconds
     setInterval(loadMonitoredProducts, 30000);
   </script>
 </body>

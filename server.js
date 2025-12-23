@@ -56,8 +56,29 @@ function makeRequest(query, operationType) {
       let data = '';
       res.on('data', (chunk) => { data += chunk; });
       res.on('end', () => {
+        // Check for HTTP-level auth errors
+        if (res.statusCode === 401 || res.statusCode === 403) {
+          reject(new Error(`Unauthorized (${res.statusCode}) - Token expired or invalid`));
+          return;
+        }
+        
         try {
           const response = JSON.parse(data);
+          
+          // Check for GraphQL-level auth errors
+          if (response.errors) {
+            const authError = response.errors.find(e => 
+              e.message?.toLowerCase().includes('unauthorized') ||
+              e.message?.toLowerCase().includes('token') ||
+              e.message?.toLowerCase().includes('auth') ||
+              e.extensions?.code === 'UNAUTHENTICATED'
+            );
+            if (authError) {
+              reject(new Error(`Auth error: ${authError.message}`));
+              return;
+            }
+          }
+          
           resolve(response);
         } catch (error) {
           reject(new Error(`Parse error: ${error.message}`));
@@ -146,29 +167,15 @@ async function addToCart(productCode) {
   return response.data?.addToCart?.response === 'SUCCESS';
 }
 
-function sendDiscordNotification(productInfo, productCode, size, deadlineStr) {
+function sendDiscordWebhook(payload) {
   return new Promise((resolve, reject) => {
-    const webhookUrl = new URL(CONFIG.discordWebhook);
+    if (!CONFIG.discordWebhook) {
+      console.log('Discord webhook not configured');
+      return resolve(false);
+    }
     
-    const embed = {
-      title: "🚨 ARTICLE AJOUTÉ AU PANIER!",
-      color: 0x00ff00,
-      fields: [
-        { name: "👕 Produit", value: `**${productInfo.designer} - ${productInfo.title}**`, inline: false },
-        { name: "🎨 Couleur", value: productInfo.color, inline: true },
-        { name: "📏 Taille", value: `**${size}**`, inline: true },
-        { name: "💰 Prix", value: `${productInfo.price} (${productInfo.discount})`, inline: true },
-        { name: "⏰ CHECKOUT AVANT", value: `**${deadlineStr}**`, inline: false },
-        { name: "🛒 Lien Checkout", value: `[Aller au panier](${CONFIG.checkoutUrl})`, inline: false }
-      ],
-      footer: { text: `Article: ${productCode}` },
-      timestamp: new Date().toISOString()
-    };
-
-    const payload = JSON.stringify({
-      content: "@everyone 🚨 **NOUVEAU STOCK DISPONIBLE - CHECKOUT MAINTENANT!**",
-      embeds: [embed]
-    });
+    const webhookUrl = new URL(CONFIG.discordWebhook);
+    const payloadStr = JSON.stringify(payload);
 
     const options = {
       hostname: webhookUrl.hostname,
@@ -177,7 +184,7 @@ function sendDiscordNotification(productInfo, productCode, size, deadlineStr) {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(payload)
+        'Content-Length': Buffer.byteLength(payloadStr)
       }
     };
 
@@ -190,9 +197,66 @@ function sendDiscordNotification(productInfo, productCode, size, deadlineStr) {
     });
 
     req.on('error', reject);
-    req.write(payload);
+    req.write(payloadStr);
     req.end();
   });
+}
+
+function sendDiscordNotification(productInfo, productCode, size, deadlineStr) {
+  const embed = {
+    title: "🚨 ARTICLE AJOUTÉ AU PANIER!",
+    color: 0x4ade80,
+    fields: [
+      { name: "👕 Produit", value: `**${productInfo.designer} - ${productInfo.title}**`, inline: false },
+      { name: "🎨 Couleur", value: productInfo.color || '-', inline: true },
+      { name: "📏 Taille", value: `**${size}**`, inline: true },
+      { name: "💰 Prix", value: `${productInfo.price || '-'} (${productInfo.discount || '-'})`, inline: true },
+      { name: "⏰ CHECKOUT AVANT", value: `**${deadlineStr}**`, inline: false },
+      { name: "🛒 Lien Checkout", value: `[Aller au panier](${CONFIG.checkoutUrl})`, inline: false }
+    ],
+    footer: { text: `Article: ${productCode}` },
+    timestamp: new Date().toISOString()
+  };
+
+  return sendDiscordWebhook({
+    content: "@everyone 🚨 **NOUVEAU STOCK DISPONIBLE - CHECKOUT MAINTENANT!**",
+    embeds: [embed]
+  });
+}
+
+// Track if we already sent a token expired notification (to avoid spam)
+let tokenExpiredNotificationSent = false;
+
+function sendTokenExpiredNotification(errorMessage) {
+  if (tokenExpiredNotificationSent) {
+    return Promise.resolve(false);
+  }
+  
+  tokenExpiredNotificationSent = true;
+  
+  const embed = {
+    title: "⚠️ TOKEN EXPIRÉ",
+    color: 0xf87171,
+    description: "Le token BestSecret a expiré. Le monitoring est en pause jusqu'à la mise à jour du token.",
+    fields: [
+      { name: "🔧 Action requise", value: "Mettez à jour le token via l'interface web ou la variable d'environnement Railway", inline: false },
+      { name: "❌ Erreur", value: `\`${errorMessage}\``, inline: false }
+    ],
+    footer: { text: "BestSecret Monitor" },
+    timestamp: new Date().toISOString()
+  };
+
+  console.log('⚠️ Token expired - sending Discord notification');
+  
+  return sendDiscordWebhook({
+    content: "@everyone ⚠️ **TOKEN EXPIRÉ - MISE À JOUR REQUISE!**",
+    embeds: [embed]
+  });
+}
+
+// Reset token expired flag when token is updated
+function resetTokenExpiredFlag() {
+  tokenExpiredNotificationSent = false;
 }
 
 // ============== MONITORING LOGIC ==============
@@ -242,7 +306,18 @@ async function monitorAllProducts() {
       
       product.previousStock = currentStock;
     } catch (error) {
-      console.error(`Error monitoring ${key}:`, error.message);
+      console.error(`[${getTimestamp()}] Error monitoring ${key}:`, error.message);
+      
+      // Check if error is related to authentication/token expiration
+      const errorMsg = error.message.toLowerCase();
+      if (errorMsg.includes('unauthorized') || 
+          errorMsg.includes('401') || 
+          errorMsg.includes('token') ||
+          errorMsg.includes('auth') ||
+          errorMsg.includes('expired') ||
+          errorMsg.includes('invalid')) {
+        await sendTokenExpiredNotification(error.message);
+      }
     }
   }
 }
@@ -400,6 +475,8 @@ app.post('/api/config/token', (req, res) => {
   }
   
   CONFIG.authorization = token.startsWith('Bearer ') ? token : `Bearer ${token}`;
+  resetTokenExpiredFlag(); // Reset the expired notification flag
+  console.log(`[${getTimestamp()}] Token updated via API`);
   res.json({ success: true, message: 'Token updated' });
 });
 
