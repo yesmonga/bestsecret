@@ -27,8 +27,29 @@ let lastTokenRefresh = null;
 // Structure: { "code-color": { code, color, productInfo, sizeMapping, watchedSizes: Set, previousStock: {}, addedToCart: Set } }
 const monitoredProducts = new Map();
 
+// Product history (persists across monitoring sessions)
+const productHistory = new Map();
+
 // Monitoring interval reference
 let monitoringInterval = null;
+
+// Add product to history
+function addToHistory(code, color, productInfo, sizeMapping) {
+  const key = `${code}-${color}`;
+  productHistory.set(key, {
+    code,
+    color,
+    title: productInfo.title || `Produit ${code}`,
+    brand: productInfo.brand,
+    price: productInfo.price,
+    originalPrice: productInfo.originalPrice,
+    discount: productInfo.discount,
+    imageUrl: productInfo.imageUrl,
+    sizeMapping,
+    addedAt: new Date().toISOString(),
+    lastMonitored: new Date().toISOString()
+  });
+}
 
 // ============== BESTSECRET API FUNCTIONS ==============
 
@@ -575,6 +596,9 @@ app.post('/api/products/add', async (req, res) => {
       previousStock: stockInfo,
       addedToCart: new Set()
     });
+    
+    // Save to history
+    addToHistory(code, color, productInfo, sizeMapping);
 
     // Start monitoring if not already running
     startMonitoring();
@@ -647,6 +671,49 @@ app.post('/api/products/:key/reset', (req, res) => {
   product.addedToCart.clear();
   
   res.json({ success: true, message: 'Cart tracking reset' });
+});
+
+// ============== HISTORY API ==============
+
+// Get product history
+app.get('/api/history', (req, res) => {
+  const history = [];
+  for (const [key, item] of productHistory) {
+    history.push({
+      key,
+      code: item.code,
+      color: item.color,
+      title: item.title,
+      brand: item.brand,
+      price: item.price,
+      originalPrice: item.originalPrice,
+      discount: item.discount,
+      sizeMapping: item.sizeMapping,
+      addedAt: item.addedAt,
+      lastMonitored: item.lastMonitored,
+      isCurrentlyMonitored: monitoredProducts.has(key)
+    });
+  }
+  // Sort by lastMonitored (most recent first)
+  history.sort((a, b) => new Date(b.lastMonitored) - new Date(a.lastMonitored));
+  res.json({ history });
+});
+
+// Clear history
+app.delete('/api/history', (req, res) => {
+  productHistory.clear();
+  res.json({ success: true, message: 'History cleared' });
+});
+
+// Remove single item from history
+app.delete('/api/history/:key', (req, res) => {
+  const { key } = req.params;
+  if (productHistory.has(key)) {
+    productHistory.delete(key);
+    res.json({ success: true, message: 'Item removed from history' });
+  } else {
+    res.status(404).json({ error: 'Item not found in history' });
+  }
 });
 
 // Update authorization token
