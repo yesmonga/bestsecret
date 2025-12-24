@@ -533,13 +533,38 @@ app.get('/api/products', (req, res) => {
   res.json({ products, isMonitoring: !!monitoringInterval });
 });
 
-// Fetch product details (step 1: enter code and color)
+// Parse BestSecret URL to extract code and colorCode
+function parseProductUrl(url) {
+  // Format: https://www.bestsecret.com/product.htm?code=40448454&colorCode=000707799&...
+  try {
+    const urlObj = new URL(url);
+    const code = urlObj.searchParams.get('code');
+    const colorCode = urlObj.searchParams.get('colorCode');
+    if (code && colorCode) {
+      return { code, color: colorCode };
+    }
+  } catch (e) {}
+  return null;
+}
+
+// Fetch product details (step 1: enter code and color or URL)
 app.post('/api/products/fetch', async (req, res) => {
   try {
-    const { code, color } = req.body;
+    let { code, color, url } = req.body;
+    
+    // If URL is provided, parse it
+    if (url && (!code || !color)) {
+      const parsed = parseProductUrl(url);
+      if (parsed) {
+        code = parsed.code;
+        color = parsed.color;
+      } else {
+        return res.status(400).json({ error: 'Invalid BestSecret URL format' });
+      }
+    }
     
     if (!code || !color) {
-      return res.status(400).json({ error: 'Code and color are required' });
+      return res.status(400).json({ error: 'Code and color are required (or provide URL)' });
     }
 
     const { productInfo, sizeMapping, stockInfo } = await fetchProductDetails(code, color);

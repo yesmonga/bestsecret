@@ -187,6 +187,32 @@
       background: rgba(255, 255, 255, 0.05);
     }
 
+    .or-divider {
+      text-align: center;
+      margin: 20px 0;
+      position: relative;
+    }
+
+    .or-divider::before {
+      content: '';
+      position: absolute;
+      top: 50%;
+      left: 0;
+      right: 0;
+      height: 1px;
+      background: rgba(255,255,255,0.1);
+    }
+
+    .or-divider span {
+      background: #1a1a1a;
+      padding: 0 16px;
+      position: relative;
+      color: rgba(255,255,255,0.4);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+    }
+
     .product-preview {
       display: none;
       margin-top: 28px;
@@ -534,6 +560,13 @@
     <h2>Ajouter un produit</h2>
     
     <div class="form-group">
+      <label>URL du produit</label>
+      <input type="text" id="productUrl" placeholder="https://www.bestsecret.com/product.htm?code=...&colorCode=...">
+    </div>
+
+    <div class="or-divider"><span>ou</span></div>
+    
+    <div class="form-group">
       <label>Code produit</label>
       <input type="text" id="productCode" placeholder="40444581" inputmode="numeric">
     </div>
@@ -627,12 +660,28 @@
       setTimeout(() => toast.className = 'toast', 3000);
     }
 
+    function parseUrl() {
+      const url = document.getElementById('productUrl').value.trim();
+      if (url) {
+        try {
+          const urlObj = new URL(url);
+          const code = urlObj.searchParams.get('code');
+          const colorCode = urlObj.searchParams.get('colorCode');
+          if (code) document.getElementById('productCode').value = code;
+          if (colorCode) document.getElementById('colorCode').value = colorCode;
+        } catch (e) {}
+      }
+    }
+
+    document.getElementById('productUrl').addEventListener('input', parseUrl);
+
     async function fetchProduct() {
+      const url = document.getElementById('productUrl').value.trim();
       const code = document.getElementById('productCode').value.trim();
       const color = document.getElementById('colorCode').value.trim();
 
-      if (!code || !color) {
-        showToast('Veuillez remplir tous les champs', true);
+      if (!url && (!code || !color)) {
+        showToast('Veuillez entrer une URL ou les codes', true);
         return;
       }
 
@@ -644,7 +693,7 @@
         const response = await fetch('/api/products/fetch', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ code, color })
+          body: JSON.stringify({ url, code, color })
         });
 
         const data = await response.json();
