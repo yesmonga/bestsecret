@@ -1,5 +1,6 @@
 const express = require('express');
 const https = require('https');
+const crypto = require('crypto');
 
 const app = express();
 app.use(express.json());
@@ -15,9 +16,87 @@ const CONFIG = {
   checkIntervalMs: 60 * 1000,
   authorization: process.env.BESTSECRET_TOKEN || "",
   refreshToken: process.env.BESTSECRET_REFRESH_TOKEN || "",
+  // Login credentials for auto-login when refresh token expires
+  email: process.env.BESTSECRET_EMAIL || "",
+  password: process.env.BESTSECRET_PASSWORD || "",
   clientId: "4oF5TQ5h5AKQCbODiQBBhrwiYf4WxcDy",
+  redirectUri: "com.bestsecret.BestSecret://login.bestsecret.com/ios/com.bestsecret.BestSecret/callback",
   tokenRefreshIntervalMs: 120 * 60 * 1000 // Refresh every 2 hours (token expires in ~2.4 hours)
 };
+
+// ============== PKCE HELPERS ==============
+
+function generateRandomString(length) {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~';
+  let result = '';
+  const randomBytes = crypto.randomBytes(length);
+  for (let i = 0; i < length; i++) {
+    result += chars[randomBytes[i] % chars.length];
+  }
+  return result;
+}
+
+function base64URLEncode(buffer) {
+  return buffer.toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=/g, '');
+}
+
+function generateCodeVerifier() {
+  return generateRandomString(43);
+}
+
+function generateCodeChallenge(codeVerifier) {
+  const hash = crypto.createHash('sha256').update(codeVerifier).digest();
+  return base64URLEncode(hash);
+}
+
+function generateState() {
+  return base64URLEncode(crypto.randomBytes(32));
+}
+
+// ============== HTTP REQUEST HELPER ==============
+
+function httpsRequest(options, postData = null) {
+  return new Promise((resolve, reject) => {
+    const req = https.request(options, (res) => {
+      let data = [];
+      res.on('data', chunk => data.push(chunk));
+      res.on('end', () => {
+        const body = Buffer.concat(data).toString('utf8');
+        resolve({
+          statusCode: res.statusCode,
+          headers: res.headers,
+          body
+        });
+      });
+    });
+    req.on('error', reject);
+    req.setTimeout(30000, () => {
+      req.destroy();
+      reject(new Error('Request timeout'));
+    });
+    if (postData) req.write(postData);
+    req.end();
+  });
+}
+
+function extractCookies(headers) {
+  const cookies = {};
+  const setCookies = headers['set-cookie'] || [];
+  for (const cookie of setCookies) {
+    const match = cookie.match(/^([^=]+)=([^;]+)/);
+    if (match) {
+      cookies[match[1]] = match[2];
+    }
+  }
+  return cookies;
+}
+
+function formatCookies(cookieObj) {
+  return Object.entries(cookieObj).map(([k, v]) => `${k}=${v}`).join('; ');
+}
 
 // Token refresh interval reference
 let tokenRefreshInterval = null;
@@ -363,24 +442,264 @@ function sendTokenRefreshFailedNotification(errorMessage) {
   const embed = {
     title: "❌ ÉCHEC RAFRAÎCHISSEMENT TOKEN",
     color: 0xf87171,
-    description: "Le rafraîchissement automatique du token a échoué. Intervention manuelle requise.",
+    description: "Le rafraîchissement automatique du token a échoué. Tentative de re-login...",
     fields: [
-      { name: "❌ Erreur", value: `\`${errorMessage}\``, inline: false },
-      { name: "🔧 Action requise", value: "Mettez à jour le refresh_token via l'interface web", inline: false }
+      { name: "❌ Erreur", value: `\`${errorMessage}\``, inline: false }
     ],
     footer: { text: "BestSecret Monitor" },
     timestamp: new Date().toISOString()
   };
 
   return sendDiscordWebhook({
-    content: "@everyone ❌ **ÉCHEC RAFRAÎCHISSEMENT - INTERVENTION REQUISE!**",
     embeds: [embed]
   });
+}
+
+function sendLoginSuccessNotification() {
+  const embed = {
+    title: "🔑 LOGIN RÉUSSI",
+    color: 0x22c55e,
+    description: "Connexion automatique à BestSecret réussie! Nouveaux tokens obtenus.",
+    fields: [
+      { name: "⏰ Prochain rafraîchissement", value: "Dans ~2 heures", inline: false }
+    ],
+    footer: { text: "BestSecret Monitor - Auto Login" },
+    timestamp: new Date().toISOString()
+  };
+
+  return sendDiscordWebhook({
+    embeds: [embed]
+  });
+}
+
+function sendLoginFailedNotification(errorMessage) {
+  const embed = {
+    title: "🚫 ÉCHEC LOGIN AUTOMATIQUE",
+    color: 0xf87171,
+    description: "La connexion automatique a échoué. Vérifiez vos identifiants.",
+    fields: [
+      { name: "❌ Erreur", value: `\`${errorMessage.substring(0, 500)}\``, inline: false },
+      { name: "🔧 Action requise", value: "Vérifiez BESTSECRET_EMAIL et BESTSECRET_PASSWORD", inline: false }
+    ],
+    footer: { text: "BestSecret Monitor" },
+    timestamp: new Date().toISOString()
+  };
+
+  return sendDiscordWebhook({
+    content: "@everyone 🚫 **ÉCHEC LOGIN - VÉRIFIEZ VOS IDENTIFIANTS!**",
+    embeds: [embed]
+  });
+}
+
+// ============== FULL LOGIN FLOW (OAuth2 + PKCE) ==============
+
+async function performFullLogin() {
+  if (!CONFIG.email || !CONFIG.password) {
+    throw new Error('No credentials configured (BESTSECRET_EMAIL / BESTSECRET_PASSWORD)');
+  }
+
+  console.log(`[${getTimestamp()}] 🔐 Starting full OAuth2 + PKCE login flow...`);
+
+  // Step 1: Generate PKCE values
+  const codeVerifier = generateCodeVerifier();
+  const codeChallenge = generateCodeChallenge(codeVerifier);
+  const state = generateState();
+
+  console.log(`[${getTimestamp()}] Generated PKCE: state=${state.substring(0, 10)}...`);
+
+  // Step 2: GET /authorize - initiates OAuth flow, returns cookies and redirect
+  const auth0Client = 'eyJuYW1lIjoiQXV0aDAuc3dpZnQiLCJlbnYiOnsiaU9TIjoiMjYuMiIsInN3aWZ0IjoiNS54In0sInZlcnNpb24iOiIyLjUuMCJ9';
+  const authorizeParams = new URLSearchParams({
+    response_type: 'code',
+    ui_locales: 'fr',
+    scope: 'openid email offline_access',
+    code_challenge_method: 'S256',
+    'ext-app-info': 'iOS/7.114.1/26.2',
+    redirect_uri: CONFIG.redirectUri,
+    client_id: CONFIG.clientId,
+    state: state,
+    code_challenge: codeChallenge,
+    auth0Client: auth0Client
+  });
+
+  const authorizeRes = await httpsRequest({
+    hostname: 'login.bestsecret.com',
+    port: 443,
+    path: `/authorize?${authorizeParams.toString()}`,
+    method: 'GET',
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.2 Mobile/15E148 Safari/604.1',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      'Accept-Language': 'fr-FR,fr;q=0.9'
+    }
+  });
+
+  if (authorizeRes.statusCode !== 302) {
+    throw new Error(`Authorize failed: ${authorizeRes.statusCode}`);
+  }
+
+  let cookies = extractCookies(authorizeRes.headers);
+  const loginRedirect = authorizeRes.headers.location;
+  console.log(`[${getTimestamp()}] Step 1/5: Authorize redirect obtained`);
+
+  // Step 3: GET /u/login - get login page (with cookies)
+  const loginPageRes = await httpsRequest({
+    hostname: 'login.bestsecret.com',
+    port: 443,
+    path: loginRedirect,
+    method: 'GET',
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.2 Mobile/15E148 Safari/604.1',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      'Accept-Language': 'fr-FR,fr;q=0.9',
+      'Cookie': formatCookies(cookies)
+    }
+  });
+
+  cookies = { ...cookies, ...extractCookies(loginPageRes.headers) };
+  console.log(`[${getTimestamp()}] Step 2/5: Login page loaded`);
+
+  // Extract state from URL for POST
+  const stateMatch = loginRedirect.match(/state=([^&]+)/);
+  const loginState = stateMatch ? stateMatch[1] : '';
+
+  // Step 4: POST /u/login - submit credentials
+  const loginPostData = new URLSearchParams({
+    state: loginState,
+    username: CONFIG.email,
+    password: CONFIG.password,
+    'ulp-remember-me': 'on'
+  }).toString();
+
+  const loginPostRes = await httpsRequest({
+    hostname: 'login.bestsecret.com',
+    port: 443,
+    path: loginRedirect,
+    method: 'POST',
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.2 Mobile/15E148 Safari/604.1',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      'Accept-Language': 'fr-FR,fr;q=0.9',
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'Cookie': formatCookies(cookies),
+      'Origin': 'https://login.bestsecret.com',
+      'Referer': `https://login.bestsecret.com${loginRedirect}`,
+      'Content-Length': Buffer.byteLength(loginPostData)
+    }
+  }, loginPostData);
+
+  if (loginPostRes.statusCode !== 302) {
+    // Check if login failed (wrong credentials)
+    if (loginPostRes.body.includes('Wrong email or password') || 
+        loginPostRes.body.includes('invalid') ||
+        loginPostRes.body.includes('error')) {
+      throw new Error('Invalid credentials - Wrong email or password');
+    }
+    throw new Error(`Login POST failed: ${loginPostRes.statusCode}`);
+  }
+
+  cookies = { ...cookies, ...extractCookies(loginPostRes.headers) };
+  const resumeRedirect = loginPostRes.headers.location;
+  console.log(`[${getTimestamp()}] Step 3/5: Login successful, resuming auth`);
+
+  // Step 5: GET /authorize/resume - get authorization code
+  const resumeRes = await httpsRequest({
+    hostname: 'login.bestsecret.com',
+    port: 443,
+    path: resumeRedirect,
+    method: 'GET',
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.2 Mobile/15E148 Safari/604.1',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      'Accept-Language': 'fr-FR,fr;q=0.9',
+      'Cookie': formatCookies(cookies),
+      'Referer': `https://login.bestsecret.com${loginRedirect}`
+    }
+  });
+
+  if (resumeRes.statusCode !== 302) {
+    throw new Error(`Resume failed: ${resumeRes.statusCode}`);
+  }
+
+  // Extract authorization code from callback URL
+  const callbackUrl = resumeRes.headers.location;
+  const codeMatch = callbackUrl.match(/code=([^&]+)/);
+  if (!codeMatch) {
+    throw new Error('No authorization code in callback');
+  }
+  const authCode = codeMatch[1];
+  console.log(`[${getTimestamp()}] Step 4/5: Authorization code obtained`);
+
+  // Step 6: POST /oauth/token - exchange code for tokens
+  const tokenPostData = JSON.stringify({
+    client_id: CONFIG.clientId,
+    code_verifier: codeVerifier,
+    redirect_uri: CONFIG.redirectUri,
+    grant_type: 'authorization_code',
+    code: authCode
+  });
+
+  const tokenRes = await httpsRequest({
+    hostname: 'login.bestsecret.com',
+    port: 443,
+    path: '/oauth/token',
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'User-Agent': 'BestSecret/2 CFNetwork/3860.300.31 Darwin/25.2.0',
+      'Accept': '*/*',
+      'Accept-Language': 'fr-FR,fr;q=0.9',
+      'Auth0-Client': auth0Client,
+      'Content-Length': Buffer.byteLength(tokenPostData)
+    }
+  }, tokenPostData);
+
+  if (tokenRes.statusCode !== 200) {
+    throw new Error(`Token exchange failed: ${tokenRes.statusCode} - ${tokenRes.body}`);
+  }
+
+  const tokenData = JSON.parse(tokenRes.body);
+  if (!tokenData.access_token || !tokenData.refresh_token) {
+    throw new Error('Invalid token response');
+  }
+
+  console.log(`[${getTimestamp()}] Step 5/5: Tokens obtained successfully!`);
+
+  return tokenData;
 }
 
 async function performTokenRefresh() {
   console.log(`[${getTimestamp()}] 🔄 Attempting token refresh...`);
   
+  // If no refresh token, go directly to full login
+  if (!CONFIG.refreshToken) {
+    console.log(`[${getTimestamp()}] No refresh token - attempting full login...`);
+    
+    if (CONFIG.email && CONFIG.password) {
+      try {
+        const tokenData = await performFullLogin();
+        
+        CONFIG.authorization = `Bearer ${tokenData.access_token}`;
+        CONFIG.refreshToken = tokenData.refresh_token;
+        lastTokenRefresh = new Date();
+        resetTokenExpiredFlag();
+        
+        console.log(`[${getTimestamp()}] ✅ Full login successful!`);
+        await sendLoginSuccessNotification();
+        
+        return true;
+      } catch (loginError) {
+        console.error(`[${getTimestamp()}] 🚫 Full login failed:`, loginError.message);
+        await sendLoginFailedNotification(loginError.message);
+        return false;
+      }
+    } else {
+      console.log(`[${getTimestamp()}] ⚠️ No credentials configured`);
+      return false;
+    }
+  }
+  
+  // Try refresh token first
   try {
     const tokenData = await refreshAccessToken();
     
@@ -398,12 +717,41 @@ async function performTokenRefresh() {
     await sendTokenRefreshSuccessNotification();
     
     return true;
-  } catch (error) {
-    console.error(`[${getTimestamp()}] ❌ Token refresh failed:`, error.message);
+  } catch (refreshError) {
+    console.error(`[${getTimestamp()}] ❌ Token refresh failed:`, refreshError.message);
     
-    await sendTokenRefreshFailedNotification(error.message);
+    await sendTokenRefreshFailedNotification(refreshError.message);
     
-    return false;
+    // Fallback: Try full login if credentials are configured
+    if (CONFIG.email && CONFIG.password) {
+      console.log(`[${getTimestamp()}] 🔐 Attempting full login as fallback...`);
+      
+      try {
+        const tokenData = await performFullLogin();
+        
+        // Update tokens in CONFIG
+        CONFIG.authorization = `Bearer ${tokenData.access_token}`;
+        CONFIG.refreshToken = tokenData.refresh_token;
+        
+        lastTokenRefresh = new Date();
+        resetTokenExpiredFlag();
+        
+        console.log(`[${getTimestamp()}] ✅ Full login successful!`);
+        
+        await sendLoginSuccessNotification();
+        
+        return true;
+      } catch (loginError) {
+        console.error(`[${getTimestamp()}] 🚫 Full login failed:`, loginError.message);
+        
+        await sendLoginFailedNotification(loginError.message);
+        
+        return false;
+      }
+    } else {
+      console.log(`[${getTimestamp()}] ⚠️ No credentials configured for fallback login`);
+      return false;
+    }
   }
 }
 
@@ -413,8 +761,9 @@ function startTokenRefresh() {
     return;
   }
   
-  if (!CONFIG.refreshToken) {
-    console.log('⚠️ No refresh token configured - automatic refresh disabled');
+  // Check if we have either refresh token OR credentials for auto-login
+  if (!CONFIG.refreshToken && (!CONFIG.email || !CONFIG.password)) {
+    console.log('⚠️ No refresh token or credentials configured - automatic refresh disabled');
     return;
   }
   
@@ -803,8 +1152,48 @@ app.get('/health', (req, res) => {
     tokenAutoRefresh: !!tokenRefreshInterval,
     lastTokenRefresh: lastTokenRefresh ? lastTokenRefresh.toISOString() : null,
     hasRefreshToken: !!CONFIG.refreshToken,
+    hasCredentials: !!(CONFIG.email && CONFIG.password),
+    hasAccessToken: !!CONFIG.authorization,
     timestamp: new Date().toISOString()
   });
+});
+
+// Endpoint to manually trigger full login
+app.post('/api/config/login', async (req, res) => {
+  try {
+    // Allow credentials from request body or use configured ones
+    const { email, password } = req.body;
+    if (email) CONFIG.email = email;
+    if (password) CONFIG.password = password;
+    
+    if (!CONFIG.email || !CONFIG.password) {
+      return res.status(400).json({ error: 'Email and password are required' });
+    }
+    
+    console.log(`[${getTimestamp()}] 🔐 Manual login triggered...`);
+    
+    const tokenData = await performFullLogin();
+    
+    CONFIG.authorization = `Bearer ${tokenData.access_token}`;
+    CONFIG.refreshToken = tokenData.refresh_token;
+    lastTokenRefresh = new Date();
+    resetTokenExpiredFlag();
+    
+    // Start token refresh if not already running
+    if (!tokenRefreshInterval) {
+      startTokenRefresh();
+    }
+    
+    res.json({ 
+      success: true, 
+      message: 'Login successful! Tokens updated.',
+      hasAccessToken: true,
+      hasRefreshToken: true
+    });
+  } catch (error) {
+    console.error(`[${getTimestamp()}] 🚫 Manual login failed:`, error.message);
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // Keep-alive ping endpoint (lightweight)
@@ -826,10 +1215,15 @@ app.listen(PORT, '0.0.0.0', () => {
 ╚══════════════════════════════════════════════════════════════╝
   `);
   
-  // Start automatic token refresh if refresh token is configured
-  if (CONFIG.refreshToken) {
+  // Start automatic token refresh if refresh token OR credentials are configured
+  if (CONFIG.refreshToken || (CONFIG.email && CONFIG.password)) {
     startTokenRefresh();
   } else {
-    console.log('⚠️ No BESTSECRET_REFRESH_TOKEN configured - automatic token refresh disabled');
+    console.log('⚠️ No BESTSECRET_REFRESH_TOKEN or credentials configured - automatic token refresh disabled');
   }
+  
+  // Log auth status
+  console.log(`📧 Email configured: ${CONFIG.email ? 'Yes' : 'No'}`);
+  console.log(`🔑 Refresh token configured: ${CONFIG.refreshToken ? 'Yes' : 'No'}`);
+  console.log(`🎫 Access token configured: ${CONFIG.authorization ? 'Yes' : 'No'}`);
 });
