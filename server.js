@@ -1,6 +1,18 @@
 const express = require('express');
 const https = require('https');
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
+
+// Data persistence files
+const DATA_DIR = path.join(__dirname, 'data');
+const PRODUCTS_FILE = path.join(DATA_DIR, 'monitored_products.json');
+const HISTORY_FILE = path.join(DATA_DIR, 'product_history.json');
+
+// Ensure data directory exists
+if (!fs.existsSync(DATA_DIR)) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+}
 
 const app = express();
 app.use(express.json());
@@ -112,6 +124,83 @@ const productHistory = new Map();
 // Monitoring interval reference
 let monitoringInterval = null;
 
+// ============== PERSISTENCE FUNCTIONS ==============
+
+function saveMonitoredProducts() {
+  try {
+    const data = [];
+    for (const [key, product] of monitoredProducts) {
+      data.push({
+        key,
+        code: product.code,
+        color: product.color,
+        productInfo: product.productInfo,
+        sizeMapping: product.sizeMapping,
+        watchedSizes: Array.from(product.watchedSizes),
+        previousStock: product.previousStock,
+        addedToCart: Array.from(product.addedToCart)
+      });
+    }
+    fs.writeFileSync(PRODUCTS_FILE, JSON.stringify(data, null, 2));
+    console.log(`[${getTimestamp()}] 💾 Saved ${data.length} monitored products`);
+  } catch (error) {
+    console.error(`[${getTimestamp()}] ❌ Error saving products:`, error.message);
+  }
+}
+
+function loadMonitoredProducts() {
+  try {
+    if (fs.existsSync(PRODUCTS_FILE)) {
+      const data = JSON.parse(fs.readFileSync(PRODUCTS_FILE, 'utf8'));
+      for (const product of data) {
+        monitoredProducts.set(product.key, {
+          code: product.code,
+          color: product.color,
+          productInfo: product.productInfo,
+          sizeMapping: product.sizeMapping,
+          watchedSizes: new Set(product.watchedSizes),
+          previousStock: product.previousStock || {},
+          addedToCart: new Set(product.addedToCart || [])
+        });
+      }
+      console.log(`[${getTimestamp()}] 📂 Loaded ${data.length} monitored products from disk`);
+      return data.length;
+    }
+  } catch (error) {
+    console.error(`[${getTimestamp()}] ❌ Error loading products:`, error.message);
+  }
+  return 0;
+}
+
+function saveHistory() {
+  try {
+    const data = [];
+    for (const [key, item] of productHistory) {
+      data.push({ key, ...item });
+    }
+    fs.writeFileSync(HISTORY_FILE, JSON.stringify(data, null, 2));
+  } catch (error) {
+    console.error(`[${getTimestamp()}] ❌ Error saving history:`, error.message);
+  }
+}
+
+function loadHistory() {
+  try {
+    if (fs.existsSync(HISTORY_FILE)) {
+      const data = JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf8'));
+      for (const item of data) {
+        const { key, ...rest } = item;
+        productHistory.set(key, rest);
+      }
+      console.log(`[${getTimestamp()}] 📂 Loaded ${data.length} history items from disk`);
+      return data.length;
+    }
+  } catch (error) {
+    console.error(`[${getTimestamp()}] ❌ Error loading history:`, error.message);
+  }
+  return 0;
+}
+
 // Add product to history
 function addToHistory(code, color, productInfo, sizeMapping) {
   const key = `${code}-${color}`;
@@ -128,6 +217,7 @@ function addToHistory(code, color, productInfo, sizeMapping) {
     addedAt: new Date().toISOString(),
     lastMonitored: new Date().toISOString()
   });
+  saveHistory(); // Auto-save after adding
 }
 
 // ============== BESTSECRET API FUNCTIONS ==============
@@ -971,6 +1061,9 @@ app.post('/api/products/add', async (req, res) => {
       addedToCart: new Set()
     });
     
+    // Save to disk
+    saveMonitoredProducts();
+    
     // Save to history
     addToHistory(code, color, productInfo, sizeMapping);
 
@@ -1007,6 +1100,7 @@ app.delete('/api/products/:key', (req, res) => {
   
   if (monitoredProducts.has(key)) {
     monitoredProducts.delete(key);
+    saveMonitoredProducts(); // Save to disk
     
     if (monitoredProducts.size === 0) {
       stopMonitoring();
@@ -1029,6 +1123,7 @@ app.put('/api/products/:key/sizes', (req, res) => {
   
   const product = monitoredProducts.get(key);
   product.watchedSizes = new Set(watchedSizes);
+  saveMonitoredProducts(); // Save to disk
   
   res.json({ success: true, watchedSizes: Array.from(product.watchedSizes) });
 });
@@ -1043,6 +1138,7 @@ app.post('/api/products/:key/reset', (req, res) => {
   
   const product = monitoredProducts.get(key);
   product.addedToCart.clear();
+  saveMonitoredProducts(); // Save to disk
   
   res.json({ success: true, message: 'Cart tracking reset' });
 });
@@ -1076,6 +1172,7 @@ app.get('/api/history', (req, res) => {
 // Clear history
 app.delete('/api/history', (req, res) => {
   productHistory.clear();
+  saveHistory(); // Save to disk
   res.json({ success: true, message: 'History cleared' });
 });
 
@@ -1084,6 +1181,7 @@ app.delete('/api/history/:key', (req, res) => {
   const { key } = req.params;
   if (productHistory.has(key)) {
     productHistory.delete(key);
+    saveHistory(); // Save to disk
     res.json({ success: true, message: 'Item removed from history' });
   } else {
     res.status(404).json({ error: 'Item not found in history' });
@@ -1214,6 +1312,16 @@ app.listen(PORT, '0.0.0.0', () => {
 ║  Health check: /health or /ping                              ║
 ╚══════════════════════════════════════════════════════════════╝
   `);
+  
+  // Load persisted data from disk
+  const loadedProducts = loadMonitoredProducts();
+  const loadedHistory = loadHistory();
+  
+  // Start monitoring if products were loaded
+  if (loadedProducts > 0) {
+    console.log(`🚀 Starting monitoring for ${loadedProducts} restored products`);
+    startMonitoring();
+  }
   
   // Start automatic token refresh if refresh token OR credentials are configured
   if (CONFIG.refreshToken || (CONFIG.email && CONFIG.password)) {
