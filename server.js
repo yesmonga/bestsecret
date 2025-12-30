@@ -1,19 +1,87 @@
 const express = require('express');
 const https = require('https');
 const crypto = require('crypto');
-const fs = require('fs');
-const path = require('path');
+const { Pool } = require('pg');
 
-// Data persistence files
-const DATA_DIR = path.join(__dirname, 'data');
-const PRODUCTS_FILE = path.join(DATA_DIR, 'monitored_products.json');
-const HISTORY_FILE = path.join(DATA_DIR, 'product_history.json');
-const FILLER_PRODUCTS_FILE = path.join(DATA_DIR, 'filler_products.json');
-const CART_KEEPER_FILE = path.join(DATA_DIR, 'cart_keeper.json');
+// PostgreSQL Database connection (Railway provides DATABASE_URL)
+const pool = process.env.DATABASE_URL ? new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.DATABASE_URL.includes('localhost') ? false : { rejectUnauthorized: false }
+}) : null;
 
-// Ensure data directory exists
-if (!fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
+// Initialize database tables
+async function initDatabase() {
+  if (!pool) {
+    console.log('⚠️ No DATABASE_URL configured - using in-memory storage only');
+    return;
+  }
+  
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS monitored_products (
+        key VARCHAR(255) PRIMARY KEY,
+        code VARCHAR(100) NOT NULL,
+        color VARCHAR(100) NOT NULL,
+        product_info JSONB,
+        size_mapping JSONB,
+        watched_sizes TEXT[],
+        previous_stock JSONB DEFAULT '{}',
+        added_to_cart TEXT[],
+        created_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS product_history (
+        key VARCHAR(255) PRIMARY KEY,
+        code VARCHAR(100) NOT NULL,
+        color VARCHAR(100) NOT NULL,
+        title VARCHAR(500),
+        brand VARCHAR(255),
+        price VARCHAR(100),
+        original_price VARCHAR(100),
+        discount VARCHAR(100),
+        image_url TEXT,
+        size_mapping JSONB,
+        added_at TIMESTAMP DEFAULT NOW(),
+        last_monitored TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS filler_products (
+        variant_id VARCHAR(255) PRIMARY KEY,
+        code VARCHAR(100) NOT NULL,
+        color VARCHAR(100) NOT NULL,
+        size VARCHAR(100),
+        product_info JSONB,
+        add_count INTEGER DEFAULT 0,
+        added_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS cart_keeper_state (
+        id INTEGER PRIMARY KEY DEFAULT 1,
+        enabled BOOLEAN DEFAULT FALSE,
+        last_cart_add_time TIMESTAMP,
+        last_filler_add_time TIMESTAMP,
+        filler_add_count INTEGER DEFAULT 0,
+        current_filler_index INTEGER DEFAULT 0,
+        cart_has_items BOOLEAN DEFAULT FALSE
+      )
+    `);
+    
+    // Insert default cart keeper state if not exists
+    await pool.query(`
+      INSERT INTO cart_keeper_state (id) VALUES (1)
+      ON CONFLICT (id) DO NOTHING
+    `);
+    
+    console.log('✅ Database tables initialized');
+  } catch (error) {
+    console.error('❌ Database initialization error:', error.message);
+  }
 }
 
 const app = express();
@@ -150,77 +218,122 @@ const CART_KEEPER_CONFIG = {
 // Monitoring interval reference
 let monitoringInterval = null;
 
-// ============== PERSISTENCE FUNCTIONS ==============
+// ============== PERSISTENCE FUNCTIONS (PostgreSQL) ==============
 
-function saveMonitoredProducts() {
+async function saveMonitoredProducts() {
+  if (!pool) return;
+  
   try {
-    const data = [];
     for (const [key, product] of monitoredProducts) {
-      data.push({
+      await pool.query(`
+        INSERT INTO monitored_products (key, code, color, product_info, size_mapping, watched_sizes, previous_stock, added_to_cart)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        ON CONFLICT (key) DO UPDATE SET
+          product_info = $4,
+          size_mapping = $5,
+          watched_sizes = $6,
+          previous_stock = $7,
+          added_to_cart = $8
+      `, [
         key,
-        code: product.code,
-        color: product.color,
-        productInfo: product.productInfo,
-        sizeMapping: product.sizeMapping,
-        watchedSizes: Array.from(product.watchedSizes),
-        previousStock: product.previousStock,
-        addedToCart: Array.from(product.addedToCart)
-      });
+        product.code,
+        product.color,
+        JSON.stringify(product.productInfo),
+        JSON.stringify(product.sizeMapping),
+        Array.from(product.watchedSizes),
+        JSON.stringify(product.previousStock || {}),
+        Array.from(product.addedToCart || [])
+      ]);
     }
-    fs.writeFileSync(PRODUCTS_FILE, JSON.stringify(data, null, 2));
-    console.log(`[${getTimestamp()}] 💾 Saved ${data.length} monitored products`);
+    console.log(`[${getTimestamp()}] 💾 Saved ${monitoredProducts.size} monitored products to DB`);
   } catch (error) {
     console.error(`[${getTimestamp()}] ❌ Error saving products:`, error.message);
   }
 }
 
-function loadMonitoredProducts() {
+async function loadMonitoredProducts() {
+  if (!pool) return 0;
+  
   try {
-    if (fs.existsSync(PRODUCTS_FILE)) {
-      const data = JSON.parse(fs.readFileSync(PRODUCTS_FILE, 'utf8'));
-      for (const product of data) {
-        monitoredProducts.set(product.key, {
-          code: product.code,
-          color: product.color,
-          productInfo: product.productInfo,
-          sizeMapping: product.sizeMapping,
-          watchedSizes: new Set(product.watchedSizes),
-          previousStock: product.previousStock || {},
-          addedToCart: new Set(product.addedToCart || [])
-        });
-      }
-      console.log(`[${getTimestamp()}] 📂 Loaded ${data.length} monitored products from disk`);
-      return data.length;
+    const result = await pool.query('SELECT * FROM monitored_products');
+    for (const row of result.rows) {
+      monitoredProducts.set(row.key, {
+        code: row.code,
+        color: row.color,
+        productInfo: row.product_info,
+        sizeMapping: row.size_mapping,
+        watchedSizes: new Set(row.watched_sizes || []),
+        previousStock: row.previous_stock || {},
+        addedToCart: new Set(row.added_to_cart || [])
+      });
     }
+    console.log(`[${getTimestamp()}] 📂 Loaded ${result.rows.length} monitored products from DB`);
+    return result.rows.length;
   } catch (error) {
     console.error(`[${getTimestamp()}] ❌ Error loading products:`, error.message);
   }
   return 0;
 }
 
-function saveHistory() {
+async function saveHistory() {
+  if (!pool) return;
+  
   try {
-    const data = [];
     for (const [key, item] of productHistory) {
-      data.push({ key, ...item });
+      await pool.query(`
+        INSERT INTO product_history (key, code, color, title, brand, price, original_price, discount, image_url, size_mapping, added_at, last_monitored)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        ON CONFLICT (key) DO UPDATE SET
+          title = $4,
+          brand = $5,
+          price = $6,
+          original_price = $7,
+          discount = $8,
+          image_url = $9,
+          size_mapping = $10,
+          last_monitored = $12
+      `, [
+        key,
+        item.code,
+        item.color,
+        item.title,
+        item.brand,
+        item.price,
+        item.originalPrice,
+        item.discount,
+        item.imageUrl,
+        JSON.stringify(item.sizeMapping),
+        item.addedAt || new Date().toISOString(),
+        item.lastMonitored || new Date().toISOString()
+      ]);
     }
-    fs.writeFileSync(HISTORY_FILE, JSON.stringify(data, null, 2));
   } catch (error) {
     console.error(`[${getTimestamp()}] ❌ Error saving history:`, error.message);
   }
 }
 
-function loadHistory() {
+async function loadHistory() {
+  if (!pool) return 0;
+  
   try {
-    if (fs.existsSync(HISTORY_FILE)) {
-      const data = JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf8'));
-      for (const item of data) {
-        const { key, ...rest } = item;
-        productHistory.set(key, rest);
-      }
-      console.log(`[${getTimestamp()}] 📂 Loaded ${data.length} history items from disk`);
-      return data.length;
+    const result = await pool.query('SELECT * FROM product_history ORDER BY added_at DESC');
+    for (const row of result.rows) {
+      productHistory.set(row.key, {
+        code: row.code,
+        color: row.color,
+        title: row.title,
+        brand: row.brand,
+        price: row.price,
+        originalPrice: row.original_price,
+        discount: row.discount,
+        imageUrl: row.image_url,
+        sizeMapping: row.size_mapping,
+        addedAt: row.added_at,
+        lastMonitored: row.last_monitored
+      });
     }
+    console.log(`[${getTimestamp()}] 📂 Loaded ${result.rows.length} history items from DB`);
+    return result.rows.length;
   } catch (error) {
     console.error(`[${getTimestamp()}] ❌ Error loading history:`, error.message);
   }
@@ -228,22 +341,49 @@ function loadHistory() {
 }
 
 // Filler products persistence
-function saveFillerProducts() {
+async function saveFillerProducts() {
+  if (!pool) return;
+  
   try {
-    fs.writeFileSync(FILLER_PRODUCTS_FILE, JSON.stringify(fillerProducts, null, 2));
-    console.log(`[${getTimestamp()}] 💾 Saved ${fillerProducts.length} filler products`);
+    // Update existing fillers in DB
+    for (const filler of fillerProducts) {
+      await pool.query(`
+        INSERT INTO filler_products (variant_id, code, color, size, product_info, add_count)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        ON CONFLICT (variant_id) DO UPDATE SET
+          add_count = $6,
+          product_info = $5
+      `, [
+        filler.variantId,
+        filler.code,
+        filler.color,
+        filler.size,
+        JSON.stringify(filler.productInfo),
+        filler.addCount || 0
+      ]);
+    }
+    console.log(`[${getTimestamp()}] 💾 Saved ${fillerProducts.length} filler products to DB`);
   } catch (error) {
     console.error(`[${getTimestamp()}] ❌ Error saving filler products:`, error.message);
   }
 }
 
-function loadFillerProducts() {
+async function loadFillerProducts() {
+  if (!pool) return 0;
+  
   try {
-    if (fs.existsSync(FILLER_PRODUCTS_FILE)) {
-      fillerProducts = JSON.parse(fs.readFileSync(FILLER_PRODUCTS_FILE, 'utf8'));
-      console.log(`[${getTimestamp()}] 📂 Loaded ${fillerProducts.length} filler products from disk`);
-      return fillerProducts.length;
-    }
+    const result = await pool.query('SELECT * FROM filler_products ORDER BY added_at');
+    fillerProducts = result.rows.map(row => ({
+      variantId: row.variant_id,
+      code: row.code,
+      color: row.color,
+      size: row.size,
+      productInfo: row.product_info,
+      addCount: row.add_count || 0,
+      addedAt: row.added_at
+    }));
+    console.log(`[${getTimestamp()}] 📂 Loaded ${fillerProducts.length} filler products from DB`);
+    return fillerProducts.length;
   } catch (error) {
     console.error(`[${getTimestamp()}] ❌ Error loading filler products:`, error.message);
   }
@@ -251,19 +391,47 @@ function loadFillerProducts() {
 }
 
 // Cart keeper state persistence
-function saveCartKeeperState() {
+async function saveCartKeeperState() {
+  if (!pool) return;
+  
   try {
-    fs.writeFileSync(CART_KEEPER_FILE, JSON.stringify(cartKeeperState, null, 2));
+    await pool.query(`
+      UPDATE cart_keeper_state SET
+        enabled = $1,
+        last_cart_add_time = $2,
+        last_filler_add_time = $3,
+        filler_add_count = $4,
+        current_filler_index = $5,
+        cart_has_items = $6
+      WHERE id = 1
+    `, [
+      cartKeeperState.enabled,
+      cartKeeperState.lastCartAddTime,
+      cartKeeperState.lastFillerAddTime,
+      cartKeeperState.fillerAddCount,
+      cartKeeperState.currentFillerIndex,
+      cartKeeperState.cartHasItems
+    ]);
   } catch (error) {
     console.error(`[${getTimestamp()}] ❌ Error saving cart keeper state:`, error.message);
   }
 }
 
-function loadCartKeeperState() {
+async function loadCartKeeperState() {
+  if (!pool) return false;
+  
   try {
-    if (fs.existsSync(CART_KEEPER_FILE)) {
-      const loaded = JSON.parse(fs.readFileSync(CART_KEEPER_FILE, 'utf8'));
-      cartKeeperState = { ...cartKeeperState, ...loaded };
+    const result = await pool.query('SELECT * FROM cart_keeper_state WHERE id = 1');
+    if (result.rows.length > 0) {
+      const row = result.rows[0];
+      cartKeeperState = {
+        enabled: row.enabled,
+        lastCartAddTime: row.last_cart_add_time,
+        lastFillerAddTime: row.last_filler_add_time,
+        fillerAddCount: row.filler_add_count || 0,
+        currentFillerIndex: row.current_filler_index || 0,
+        cartHasItems: row.cart_has_items
+      };
       console.log(`[${getTimestamp()}] 📂 Loaded cart keeper state (enabled: ${cartKeeperState.enabled})`);
       return true;
     }
@@ -271,6 +439,46 @@ function loadCartKeeperState() {
     console.error(`[${getTimestamp()}] ❌ Error loading cart keeper state:`, error.message);
   }
   return false;
+}
+
+// Delete a monitored product from DB
+async function deleteMonitoredProductFromDB(key) {
+  if (!pool) return;
+  try {
+    await pool.query('DELETE FROM monitored_products WHERE key = $1', [key]);
+  } catch (error) {
+    console.error(`[${getTimestamp()}] ❌ Error deleting product from DB:`, error.message);
+  }
+}
+
+// Delete a filler product from DB
+async function deleteFillerFromDB(variantId) {
+  if (!pool) return;
+  try {
+    await pool.query('DELETE FROM filler_products WHERE variant_id = $1', [variantId]);
+  } catch (error) {
+    console.error(`[${getTimestamp()}] ❌ Error deleting filler from DB:`, error.message);
+  }
+}
+
+// Delete history item from DB
+async function deleteHistoryFromDB(key) {
+  if (!pool) return;
+  try {
+    await pool.query('DELETE FROM product_history WHERE key = $1', [key]);
+  } catch (error) {
+    console.error(`[${getTimestamp()}] ❌ Error deleting history from DB:`, error.message);
+  }
+}
+
+// Clear all history from DB
+async function clearHistoryFromDB() {
+  if (!pool) return;
+  try {
+    await pool.query('DELETE FROM product_history');
+  } catch (error) {
+    console.error(`[${getTimestamp()}] ❌ Error clearing history from DB:`, error.message);
+  }
 }
 
 // ============== CART KEEPER FUNCTIONS ==============
@@ -1383,12 +1591,12 @@ app.post('/api/products/add', async (req, res) => {
 });
 
 // Remove product from monitoring
-app.delete('/api/products/:key', (req, res) => {
+app.delete('/api/products/:key', async (req, res) => {
   const { key } = req.params;
   
   if (monitoredProducts.has(key)) {
     monitoredProducts.delete(key);
-    saveMonitoredProducts(); // Save to disk
+    await deleteMonitoredProductFromDB(key);
     
     if (monitoredProducts.size === 0) {
       stopMonitoring();
@@ -1458,18 +1666,18 @@ app.get('/api/history', (req, res) => {
 });
 
 // Clear history
-app.delete('/api/history', (req, res) => {
+app.delete('/api/history', async (req, res) => {
   productHistory.clear();
-  saveHistory(); // Save to disk
+  await clearHistoryFromDB();
   res.json({ success: true, message: 'History cleared' });
 });
 
 // Remove single item from history
-app.delete('/api/history/:key', (req, res) => {
+app.delete('/api/history/:key', async (req, res) => {
   const { key } = req.params;
   if (productHistory.has(key)) {
     productHistory.delete(key);
-    saveHistory(); // Save to disk
+    await deleteHistoryFromDB(key);
     res.json({ success: true, message: 'Item removed from history' });
   } else {
     res.status(404).json({ error: 'Item not found in history' });
@@ -1621,7 +1829,7 @@ app.post('/api/fillers', async (req, res) => {
 });
 
 // Remove filler product
-app.delete('/api/fillers/:variantId', (req, res) => {
+app.delete('/api/fillers/:variantId', async (req, res) => {
   const { variantId } = req.params;
   const index = fillerProducts.findIndex(f => f.variantId === variantId);
   
@@ -1630,7 +1838,7 @@ app.delete('/api/fillers/:variantId', (req, res) => {
   }
   
   fillerProducts.splice(index, 1);
-  saveFillerProducts();
+  await deleteFillerFromDB(variantId);
   
   res.json({ success: true, message: 'Filler removed' });
 });
@@ -1764,45 +1972,57 @@ app.get('/ping', (req, res) => {
 // Store server start time
 const serverStartTime = new Date();
 
-// Start server
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`
+// Start server with async initialization
+async function startServer() {
+  // Initialize database first
+  await initDatabase();
+  
+  app.listen(PORT, '0.0.0.0', async () => {
+    console.log(`
 ╔══════════════════════════════════════════════════════════════╗
 ║  🔍 BestSecret Stock Monitor - Web Interface                 ║
 ║  Server running on port ${String(PORT).padEnd(37)} ║
 ║  Started at: ${serverStartTime.toISOString().padEnd(48)} ║
 ║  Health check: /health or /ping                              ║
+║  Database: ${pool ? 'PostgreSQL ✅' : 'In-memory only ⚠️'}${pool ? '' : '                          '}             ║
 ╚══════════════════════════════════════════════════════════════╝
-  `);
-  
-  // Load persisted data from disk
-  const loadedProducts = loadMonitoredProducts();
-  const loadedHistory = loadHistory();
-  const loadedFillers = loadFillerProducts();
-  loadCartKeeperState();
-  
-  // Start monitoring if products were loaded
-  if (loadedProducts > 0) {
-    console.log(`🚀 Starting monitoring for ${loadedProducts} restored products`);
-    startMonitoring();
-  }
-  
-  // Start cart keeper if it was enabled and fillers exist
-  if (cartKeeperState.enabled && loadedFillers > 0) {
-    console.log(`🛒 Resuming cart keeper with ${loadedFillers} filler products`);
-    startCartKeeper();
-  }
-  
-  // Start automatic token refresh if refresh token OR credentials are configured
-  if (CONFIG.refreshToken || (CONFIG.email && CONFIG.password)) {
-    startTokenRefresh();
-  } else {
-    console.log('⚠️ No BESTSECRET_REFRESH_TOKEN or credentials configured - automatic token refresh disabled');
-  }
-  
-  // Log auth status
-  console.log(`📧 Email configured: ${CONFIG.email ? 'Yes' : 'No'}`);
-  console.log(`🔑 Refresh token configured: ${CONFIG.refreshToken ? 'Yes' : 'No'}`);
-  console.log(`🎫 Access token configured: ${CONFIG.authorization ? 'Yes' : 'No'}`);
-  console.log(`🛒 Filler products: ${loadedFillers}`);
+    `);
+    
+    // Load persisted data from database
+    const loadedProducts = await loadMonitoredProducts();
+    const loadedHistory = await loadHistory();
+    const loadedFillers = await loadFillerProducts();
+    await loadCartKeeperState();
+    
+    // Start monitoring if products were loaded
+    if (loadedProducts > 0) {
+      console.log(`🚀 Starting monitoring for ${loadedProducts} restored products`);
+      startMonitoring();
+    }
+    
+    // Start cart keeper if it was enabled and fillers exist
+    if (cartKeeperState.enabled && loadedFillers > 0) {
+      console.log(`🛒 Resuming cart keeper with ${loadedFillers} filler products`);
+      startCartKeeper();
+    }
+    
+    // Start automatic token refresh if refresh token OR credentials are configured
+    if (CONFIG.refreshToken || (CONFIG.email && CONFIG.password)) {
+      startTokenRefresh();
+    } else {
+      console.log('⚠️ No BESTSECRET_REFRESH_TOKEN or credentials configured - automatic token refresh disabled');
+    }
+    
+    // Log auth status
+    console.log(`📧 Email configured: ${CONFIG.email ? 'Yes' : 'No'}`);
+    console.log(`🔑 Refresh token configured: ${CONFIG.refreshToken ? 'Yes' : 'No'}`);
+    console.log(`🎫 Access token configured: ${CONFIG.authorization ? 'Yes' : 'No'}`);
+    console.log(`🛒 Filler products: ${loadedFillers}`);
+    console.log(`🗄️ Database: ${pool ? 'PostgreSQL connected' : 'No database (data will not persist)'}`);
+  });
+}
+
+startServer().catch(err => {
+  console.error('Failed to start server:', err);
+  process.exit(1);
 });
