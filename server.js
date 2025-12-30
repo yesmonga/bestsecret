@@ -8,6 +8,8 @@ const path = require('path');
 const DATA_DIR = path.join(__dirname, 'data');
 const PRODUCTS_FILE = path.join(DATA_DIR, 'monitored_products.json');
 const HISTORY_FILE = path.join(DATA_DIR, 'product_history.json');
+const FILLER_PRODUCTS_FILE = path.join(DATA_DIR, 'filler_products.json');
+const CART_KEEPER_FILE = path.join(DATA_DIR, 'cart_keeper.json');
 
 // Ensure data directory exists
 if (!fs.existsSync(DATA_DIR)) {
@@ -121,6 +123,30 @@ const monitoredProducts = new Map();
 // Product history (persists across monitoring sessions)
 const productHistory = new Map();
 
+// Filler products (always in stock items to keep cart alive)
+// Structure: [{ code, color, variantId, productInfo, addCount }]
+let fillerProducts = [];
+
+// Cart keeper state
+let cartKeeperState = {
+  enabled: false,
+  lastCartAddTime: null,      // When a monitored product was last added to cart
+  lastFillerAddTime: null,    // When a filler product was last added
+  fillerAddCount: 0,          // How many filler items added in current session
+  currentFillerIndex: 0,      // Which filler product to use next
+  cartHasItems: false         // Whether cart has monitored items
+};
+
+// Cart keeper interval reference
+let cartKeeperInterval = null;
+
+// Cart keeper settings
+const CART_KEEPER_CONFIG = {
+  checkIntervalMs: 60 * 1000,        // Check every 1 minute
+  addFillerAfterMs: 18 * 60 * 1000,  // Add filler 18 min after last add (before 20 min expiry)
+  maxFillerPerProduct: 4             // Max 4 items of same product/size
+};
+
 // Monitoring interval reference
 let monitoringInterval = null;
 
@@ -199,6 +225,261 @@ function loadHistory() {
     console.error(`[${getTimestamp()}] ❌ Error loading history:`, error.message);
   }
   return 0;
+}
+
+// Filler products persistence
+function saveFillerProducts() {
+  try {
+    fs.writeFileSync(FILLER_PRODUCTS_FILE, JSON.stringify(fillerProducts, null, 2));
+    console.log(`[${getTimestamp()}] 💾 Saved ${fillerProducts.length} filler products`);
+  } catch (error) {
+    console.error(`[${getTimestamp()}] ❌ Error saving filler products:`, error.message);
+  }
+}
+
+function loadFillerProducts() {
+  try {
+    if (fs.existsSync(FILLER_PRODUCTS_FILE)) {
+      fillerProducts = JSON.parse(fs.readFileSync(FILLER_PRODUCTS_FILE, 'utf8'));
+      console.log(`[${getTimestamp()}] 📂 Loaded ${fillerProducts.length} filler products from disk`);
+      return fillerProducts.length;
+    }
+  } catch (error) {
+    console.error(`[${getTimestamp()}] ❌ Error loading filler products:`, error.message);
+  }
+  return 0;
+}
+
+// Cart keeper state persistence
+function saveCartKeeperState() {
+  try {
+    fs.writeFileSync(CART_KEEPER_FILE, JSON.stringify(cartKeeperState, null, 2));
+  } catch (error) {
+    console.error(`[${getTimestamp()}] ❌ Error saving cart keeper state:`, error.message);
+  }
+}
+
+function loadCartKeeperState() {
+  try {
+    if (fs.existsSync(CART_KEEPER_FILE)) {
+      const loaded = JSON.parse(fs.readFileSync(CART_KEEPER_FILE, 'utf8'));
+      cartKeeperState = { ...cartKeeperState, ...loaded };
+      console.log(`[${getTimestamp()}] 📂 Loaded cart keeper state (enabled: ${cartKeeperState.enabled})`);
+      return true;
+    }
+  } catch (error) {
+    console.error(`[${getTimestamp()}] ❌ Error loading cart keeper state:`, error.message);
+  }
+  return false;
+}
+
+// ============== CART KEEPER FUNCTIONS ==============
+
+// Check cart reservation time using BestSecret API
+async function checkCartReservationTime() {
+  return new Promise((resolve, reject) => {
+    const params = new URLSearchParams({
+      operationName: 'CartReservationTime',
+      variables: '{}',
+      extensions: JSON.stringify({
+        persistedQuery: {
+          version: 1,
+          sha256Hash: '3031f08f392db789cffa4581a4b72da736af1ce29775692bc7661da4cfa68627'
+        }
+      })
+    });
+
+    const options = {
+      hostname: 'www.bestsecret.com',
+      port: 443,
+      path: `/bff-spa?${params.toString()}`,
+      method: 'GET',
+      headers: {
+        'Accept': '*/*',
+        'x-current-spa-version': '1766058484',
+        'x-correlation-id': `web-spa-${crypto.randomUUID()}`,
+        'Content-Type': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) iOS app/7.114.1 (iOS 26.2) [iPhone18,1]',
+        'Authorization': CONFIG.authorization,
+        'Cookie': 'JSESSIONID=Y24-9364755d-c42b-4cd0-8d7e-fcaf3a4eb9b3'
+      }
+    };
+
+    const req = https.request(options, (res) => {
+      let data = '';
+      res.on('data', chunk => { data += chunk; });
+      res.on('end', () => {
+        try {
+          const response = JSON.parse(data);
+          const remainingMs = response.data?.cart?.remainingReservationTimeInMS || 0;
+          const maxMs = response.data?.accountInfo?.maximumCartReservationTimeInMS || 1200000;
+          resolve({ remainingMs, maxMs, hasItems: remainingMs > 0 });
+        } catch (e) {
+          reject(new Error(`Failed to parse cart time: ${e.message}`));
+        }
+      });
+    });
+
+    req.on('error', reject);
+    req.setTimeout(30000, () => {
+      req.destroy();
+      reject(new Error('Cart check timeout'));
+    });
+    req.end();
+  });
+}
+
+// Get the next filler product to add (rotates through available fillers)
+function getNextFillerProduct() {
+  if (fillerProducts.length === 0) return null;
+  
+  // Find a filler that hasn't reached max add count
+  for (let i = 0; i < fillerProducts.length; i++) {
+    const index = (cartKeeperState.currentFillerIndex + i) % fillerProducts.length;
+    const filler = fillerProducts[index];
+    
+    if ((filler.addCount || 0) < CART_KEEPER_CONFIG.maxFillerPerProduct) {
+      cartKeeperState.currentFillerIndex = (index + 1) % fillerProducts.length;
+      return filler;
+    }
+  }
+  
+  // All fillers maxed out, reset counts and start over
+  console.log(`[${getTimestamp()}] 🔄 Resetting filler add counts`);
+  fillerProducts.forEach(f => f.addCount = 0);
+  saveFillerProducts();
+  cartKeeperState.currentFillerIndex = 0;
+  return fillerProducts[0];
+}
+
+// Cart keeper main logic - runs periodically
+async function runCartKeeper() {
+  if (!cartKeeperState.enabled || fillerProducts.length === 0) {
+    return;
+  }
+
+  try {
+    // Check if cart has items and how much time is left
+    const cartInfo = await checkCartReservationTime();
+    
+    console.log(`[${getTimestamp()}] 🛒 Cart check: ${cartInfo.hasItems ? 'Has items' : 'Empty'}, ${Math.round(cartInfo.remainingMs / 60000)}min remaining`);
+    
+    if (!cartInfo.hasItems) {
+      // Cart is empty, reset state
+      if (cartKeeperState.cartHasItems) {
+        console.log(`[${getTimestamp()}] 📭 Cart is now empty`);
+        cartKeeperState.cartHasItems = false;
+        cartKeeperState.lastCartAddTime = null;
+        saveCartKeeperState();
+      }
+      return;
+    }
+
+    // Cart has items
+    cartKeeperState.cartHasItems = true;
+    
+    // Calculate time since last add (either monitored product or filler)
+    const lastAddTime = cartKeeperState.lastFillerAddTime || cartKeeperState.lastCartAddTime;
+    const now = Date.now();
+    const timeSinceLastAdd = lastAddTime ? now - new Date(lastAddTime).getTime() : Infinity;
+    
+    // Check if we need to add a filler (18 minutes since last add OR remaining time < 3 minutes)
+    const needsFiller = timeSinceLastAdd >= CART_KEEPER_CONFIG.addFillerAfterMs || 
+                        cartInfo.remainingMs < 3 * 60 * 1000;
+    
+    if (needsFiller) {
+      const filler = getNextFillerProduct();
+      if (filler) {
+        console.log(`[${getTimestamp()}] 🔄 Adding filler product to keep cart alive...`);
+        
+        const success = await addToCart(filler.variantId);
+        if (success) {
+          filler.addCount = (filler.addCount || 0) + 1;
+          cartKeeperState.lastFillerAddTime = new Date().toISOString();
+          cartKeeperState.fillerAddCount++;
+          
+          saveFillerProducts();
+          saveCartKeeperState();
+          
+          console.log(`[${getTimestamp()}] ✅ Filler added! (${filler.productInfo?.title || filler.variantId}) - Total fillers: ${cartKeeperState.fillerAddCount}`);
+          
+          // Send Discord notification about cart keeper activity
+          await sendCartKeeperNotification(filler, cartKeeperState.fillerAddCount);
+        } else {
+          console.log(`[${getTimestamp()}] ❌ Failed to add filler product`);
+        }
+      } else {
+        console.log(`[${getTimestamp()}] ⚠️ No filler products available`);
+      }
+    }
+  } catch (error) {
+    console.error(`[${getTimestamp()}] Cart keeper error:`, error.message);
+  }
+}
+
+// Send Discord notification when filler is added
+function sendCartKeeperNotification(filler, totalFillers) {
+  const embed = {
+    title: "🔄 Cart Keeper - Panier maintenu",
+    color: 0x3b82f6,
+    fields: [
+      { name: "📦 Produit ajouté", value: filler.productInfo?.title || filler.variantId, inline: false },
+      { name: "🔢 Total fillers ajoutés", value: `${totalFillers}`, inline: true },
+      { name: "⏰ Prochain refresh", value: "~18 min", inline: true }
+    ],
+    footer: { text: "Cart Keeper - Maintient le panier actif" },
+    timestamp: new Date().toISOString()
+  };
+
+  return sendDiscordWebhook({ embeds: [embed] });
+}
+
+// Start cart keeper
+function startCartKeeper() {
+  if (cartKeeperInterval) {
+    console.log('Cart keeper already running');
+    return;
+  }
+  
+  if (fillerProducts.length === 0) {
+    console.log('⚠️ No filler products configured - cart keeper disabled');
+    return;
+  }
+  
+  cartKeeperState.enabled = true;
+  saveCartKeeperState();
+  
+  console.log(`[${getTimestamp()}] 🛒 Cart keeper started (checking every ${CART_KEEPER_CONFIG.checkIntervalMs / 1000}s)`);
+  
+  // Run immediately
+  runCartKeeper();
+  
+  // Then run periodically
+  cartKeeperInterval = setInterval(runCartKeeper, CART_KEEPER_CONFIG.checkIntervalMs);
+}
+
+// Stop cart keeper
+function stopCartKeeper() {
+  if (cartKeeperInterval) {
+    clearInterval(cartKeeperInterval);
+    cartKeeperInterval = null;
+  }
+  cartKeeperState.enabled = false;
+  saveCartKeeperState();
+  console.log(`[${getTimestamp()}] 🛑 Cart keeper stopped`);
+}
+
+// Called when a monitored product is added to cart
+function onMonitoredProductAddedToCart() {
+  cartKeeperState.lastCartAddTime = new Date().toISOString();
+  cartKeeperState.cartHasItems = true;
+  cartKeeperState.lastFillerAddTime = null; // Reset filler timer
+  saveCartKeeperState();
+  
+  // Auto-start cart keeper if fillers are configured
+  if (fillerProducts.length > 0 && !cartKeeperInterval) {
+    startCartKeeper();
+  }
 }
 
 // Add product to history
@@ -903,6 +1184,7 @@ async function monitorAllProducts() {
             const success = await addToCart(variantId);
             if (success) {
               product.addedToCart.add(variantId);
+              saveMonitoredProducts(); // Save to disk
               
               const now = new Date();
               const deadline = new Date(now.getTime() + CONFIG.cartReservationMinutes * 60 * 1000);
@@ -914,6 +1196,9 @@ async function monitorAllProducts() {
               console.log(`✅ Added to cart! Checkout before: ${deadlineStr}`);
               
               await sendDiscordNotification(product.productInfo, variantId, size, deadlineStr);
+              
+              // Trigger cart keeper to start keeping the cart alive
+              onMonitoredProductAddedToCart();
             }
           }
         }
@@ -1229,6 +1514,174 @@ app.post('/api/config/refresh', async (req, res) => {
   }
 });
 
+// ============== CART KEEPER API ==============
+
+// Get cart reservation time
+app.get('/api/cart/time', async (req, res) => {
+  try {
+    const cartInfo = await checkCartReservationTime();
+    res.json({
+      remainingMs: cartInfo.remainingMs,
+      remainingMinutes: Math.round(cartInfo.remainingMs / 60000),
+      maxMs: cartInfo.maxMs,
+      hasItems: cartInfo.hasItems
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get filler products
+app.get('/api/fillers', (req, res) => {
+  res.json({
+    fillers: fillerProducts,
+    cartKeeperEnabled: cartKeeperState.enabled,
+    cartKeeperState: {
+      lastCartAddTime: cartKeeperState.lastCartAddTime,
+      lastFillerAddTime: cartKeeperState.lastFillerAddTime,
+      fillerAddCount: cartKeeperState.fillerAddCount,
+      cartHasItems: cartKeeperState.cartHasItems
+    }
+  });
+});
+
+// Add filler product
+app.post('/api/fillers', async (req, res) => {
+  try {
+    const { code, color, variantId, url } = req.body;
+    
+    let productCode = code;
+    let productColor = color;
+    let productVariantId = variantId;
+    
+    // If URL is provided, parse it
+    if (url) {
+      const parsed = parseProductUrl(url);
+      if (parsed) {
+        productCode = parsed.code;
+        productColor = parsed.color;
+      }
+    }
+    
+    if (!productCode || !productColor) {
+      return res.status(400).json({ error: 'Code and color are required (or provide URL)' });
+    }
+    
+    // Fetch product info
+    const { productInfo, sizeMapping, stockInfo } = await fetchProductDetails(productCode, productColor);
+    
+    // If no variantId provided, find the first in-stock variant
+    if (!productVariantId) {
+      for (const [vId, stock] of Object.entries(stockInfo)) {
+        if (stock > 0) {
+          productVariantId = vId;
+          break;
+        }
+      }
+    }
+    
+    if (!productVariantId) {
+      return res.status(400).json({ error: 'No in-stock variant found. Please provide a specific variantId.' });
+    }
+    
+    // Check if already exists
+    const exists = fillerProducts.find(f => f.variantId === productVariantId);
+    if (exists) {
+      return res.status(400).json({ error: 'This filler product already exists' });
+    }
+    
+    const filler = {
+      code: productCode,
+      color: productColor,
+      variantId: productVariantId,
+      size: sizeMapping[productVariantId]?.size || 'N/A',
+      productInfo: {
+        title: productInfo.title,
+        designer: productInfo.designer,
+        price: productInfo.price
+      },
+      addCount: 0,
+      addedAt: new Date().toISOString()
+    };
+    
+    fillerProducts.push(filler);
+    saveFillerProducts();
+    
+    res.json({ 
+      success: true, 
+      message: `Filler added: ${productInfo.designer} - ${productInfo.title} (${filler.size})`,
+      filler 
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Remove filler product
+app.delete('/api/fillers/:variantId', (req, res) => {
+  const { variantId } = req.params;
+  const index = fillerProducts.findIndex(f => f.variantId === variantId);
+  
+  if (index === -1) {
+    return res.status(404).json({ error: 'Filler not found' });
+  }
+  
+  fillerProducts.splice(index, 1);
+  saveFillerProducts();
+  
+  res.json({ success: true, message: 'Filler removed' });
+});
+
+// Reset filler add counts
+app.post('/api/fillers/reset', (req, res) => {
+  fillerProducts.forEach(f => f.addCount = 0);
+  cartKeeperState.fillerAddCount = 0;
+  cartKeeperState.currentFillerIndex = 0;
+  saveFillerProducts();
+  saveCartKeeperState();
+  
+  res.json({ success: true, message: 'Filler counts reset' });
+});
+
+// Start/stop cart keeper
+app.post('/api/cart-keeper/start', (req, res) => {
+  if (fillerProducts.length === 0) {
+    return res.status(400).json({ error: 'Add filler products first' });
+  }
+  startCartKeeper();
+  res.json({ success: true, message: 'Cart keeper started' });
+});
+
+app.post('/api/cart-keeper/stop', (req, res) => {
+  stopCartKeeper();
+  res.json({ success: true, message: 'Cart keeper stopped' });
+});
+
+// Get cart keeper status
+app.get('/api/cart-keeper/status', async (req, res) => {
+  try {
+    let cartInfo = { remainingMs: 0, hasItems: false };
+    try {
+      cartInfo = await checkCartReservationTime();
+    } catch (e) {
+      // Ignore cart check errors
+    }
+    
+    res.json({
+      enabled: cartKeeperState.enabled,
+      isRunning: !!cartKeeperInterval,
+      fillerCount: fillerProducts.length,
+      cartHasItems: cartInfo.hasItems,
+      remainingMinutes: Math.round(cartInfo.remainingMs / 60000),
+      lastCartAddTime: cartKeeperState.lastCartAddTime,
+      lastFillerAddTime: cartKeeperState.lastFillerAddTime,
+      totalFillersAdded: cartKeeperState.fillerAddCount
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Serve the main page
 app.get('/', (req, res) => {
   res.sendFile(__dirname + '/public/index.html');
@@ -1252,6 +1705,12 @@ app.get('/health', (req, res) => {
     hasRefreshToken: !!CONFIG.refreshToken,
     hasCredentials: !!(CONFIG.email && CONFIG.password),
     hasAccessToken: !!CONFIG.authorization,
+    cartKeeper: {
+      enabled: cartKeeperState.enabled,
+      isRunning: !!cartKeeperInterval,
+      fillerCount: fillerProducts.length,
+      totalFillersAdded: cartKeeperState.fillerAddCount
+    },
     timestamp: new Date().toISOString()
   });
 });
@@ -1316,11 +1775,19 @@ app.listen(PORT, '0.0.0.0', () => {
   // Load persisted data from disk
   const loadedProducts = loadMonitoredProducts();
   const loadedHistory = loadHistory();
+  const loadedFillers = loadFillerProducts();
+  loadCartKeeperState();
   
   // Start monitoring if products were loaded
   if (loadedProducts > 0) {
     console.log(`🚀 Starting monitoring for ${loadedProducts} restored products`);
     startMonitoring();
+  }
+  
+  // Start cart keeper if it was enabled and fillers exist
+  if (cartKeeperState.enabled && loadedFillers > 0) {
+    console.log(`🛒 Resuming cart keeper with ${loadedFillers} filler products`);
+    startCartKeeper();
   }
   
   // Start automatic token refresh if refresh token OR credentials are configured
@@ -1334,4 +1801,5 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`📧 Email configured: ${CONFIG.email ? 'Yes' : 'No'}`);
   console.log(`🔑 Refresh token configured: ${CONFIG.refreshToken ? 'Yes' : 'No'}`);
   console.log(`🎫 Access token configured: ${CONFIG.authorization ? 'Yes' : 'No'}`);
+  console.log(`🛒 Filler products: ${loadedFillers}`);
 });

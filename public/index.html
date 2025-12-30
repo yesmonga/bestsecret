@@ -647,6 +647,60 @@
     </details>
   </div>
 
+  <!-- Cart Keeper Section -->
+  <div class="card" style="margin-top: 32px;">
+    <details class="token-section" id="cartKeeperSection">
+      <summary>🛒 Cart Keeper (maintien du panier)</summary>
+      
+      <div id="cartKeeperStatus" style="margin-top: 16px;"></div>
+      
+      <div style="background: rgba(59, 130, 246, 0.1); border: 1px solid rgba(59, 130, 246, 0.3); border-radius: 8px; padding: 12px; margin: 16px 0;">
+        <div style="color: rgba(255,255,255,0.7); font-size: 11px; line-height: 1.5;">
+          💡 <strong>Comment ça marche :</strong><br>
+          Ajoutez des produits "filler" (toujours en stock) ci-dessous.<br>
+          Quand un article est dans votre panier, le Cart Keeper ajoutera automatiquement un filler toutes les 18 min pour réinitialiser le timer du panier (20 min max).
+        </div>
+      </div>
+      
+      <div class="divider"></div>
+      
+      <div style="font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: rgba(255,255,255,0.5); margin-bottom: 12px;">Ajouter un produit filler</div>
+      
+      <div class="form-group">
+        <input type="text" id="fillerUrl" placeholder="URL du produit filler (toujours en stock)" style="width: 100%;">
+      </div>
+      
+      <button class="btn btn-primary" onclick="addFiller()" style="margin-bottom: 16px;">
+        Ajouter ce filler
+      </button>
+      
+      <div class="divider"></div>
+      
+      <div style="font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: rgba(255,255,255,0.5); margin-bottom: 12px;">Produits filler configurés</div>
+      
+      <div id="fillerProducts">
+        <div class="empty-state" style="padding: 20px;">
+          <p style="font-size: 11px;">Aucun filler configuré</p>
+        </div>
+      </div>
+      
+      <div class="divider"></div>
+      
+      <div style="display: flex; gap: 10px;">
+        <button class="btn btn-success" id="startCartKeeperBtn" onclick="startCartKeeper()" style="flex: 1;">
+          ▶️ Activer Cart Keeper
+        </button>
+        <button class="btn btn-danger" id="stopCartKeeperBtn" onclick="stopCartKeeper()" style="flex: 1;">
+          ⏹️ Désactiver
+        </button>
+      </div>
+      
+      <button class="btn btn-secondary" onclick="resetFillerCounts()" style="margin-top: 10px; width: 100%;">
+        🔄 Réinitialiser les compteurs
+      </button>
+    </details>
+  </div>
+
   <div class="toast" id="toast"></div>
 
   <script>
@@ -1095,12 +1149,175 @@
       }
     }
 
+    // ============== CART KEEPER FUNCTIONS ==============
+    
+    async function loadCartKeeperStatus() {
+      try {
+        const response = await fetch('/api/cart-keeper/status');
+        const data = await response.json();
+        
+        const statusEl = document.getElementById('cartKeeperStatus');
+        const startBtn = document.getElementById('startCartKeeperBtn');
+        const stopBtn = document.getElementById('stopCartKeeperBtn');
+        
+        if (data.isRunning) {
+          statusEl.innerHTML = `
+            <div style="background: rgba(74, 222, 128, 0.1); border: 1px solid rgba(74, 222, 128, 0.3); border-radius: 8px; padding: 12px; margin-bottom: 12px;">
+              <div style="color: #4ade80; font-weight: 500; font-size: 12px;">✅ Cart Keeper actif</div>
+              <div style="color: rgba(255,255,255,0.5); font-size: 11px; margin-top: 8px;">
+                🛒 Panier: ${data.cartHasItems ? `<span style="color: #4ade80;">Articles présents (${data.remainingMinutes} min restantes)</span>` : '<span style="color: rgba(255,255,255,0.4);">Vide</span>'}<br>
+                📦 Fillers configurés: ${data.fillerCount}<br>
+                🔄 Fillers ajoutés: ${data.totalFillersAdded}
+              </div>
+            </div>
+          `;
+          startBtn.disabled = true;
+          stopBtn.disabled = false;
+        } else {
+          statusEl.innerHTML = `
+            <div style="background: rgba(248, 113, 113, 0.1); border: 1px solid rgba(248, 113, 113, 0.3); border-radius: 8px; padding: 12px; margin-bottom: 12px;">
+              <div style="color: #f87171; font-weight: 500; font-size: 12px;">⏸️ Cart Keeper inactif</div>
+              <div style="color: rgba(255,255,255,0.5); font-size: 11px; margin-top: 4px;">
+                📦 Fillers configurés: ${data.fillerCount}
+              </div>
+            </div>
+          `;
+          startBtn.disabled = data.fillerCount === 0;
+          stopBtn.disabled = true;
+        }
+      } catch (error) {
+        console.error('Error loading cart keeper status:', error);
+      }
+    }
+    
+    async function loadFillerProducts() {
+      try {
+        const response = await fetch('/api/fillers');
+        const data = await response.json();
+        
+        const container = document.getElementById('fillerProducts');
+        
+        if (data.fillers.length === 0) {
+          container.innerHTML = `
+            <div class="empty-state" style="padding: 20px;">
+              <p style="font-size: 11px;">Aucun filler configuré</p>
+            </div>
+          `;
+          return;
+        }
+        
+        container.innerHTML = data.fillers.map(filler => `
+          <div class="monitored-product" style="margin-bottom: 12px; padding: 16px;">
+            <div class="designer">${filler.productInfo?.designer || 'Filler'}</div>
+            <h4 style="font-size: 13px;">${filler.productInfo?.title || filler.variantId}</h4>
+            <div class="info-row">
+              <div class="info-item">
+                <span class="info-label">Taille</span>
+                <span>${filler.size}</span>
+              </div>
+              <div class="info-item">
+                <span class="info-label">Ajouts</span>
+                <span>${filler.addCount || 0} / 4</span>
+              </div>
+            </div>
+            <button class="btn btn-danger" onclick="removeFiller('${filler.variantId}')" style="margin-top: 12px; width: 100%; padding: 10px; font-size: 10px;">
+              Supprimer
+            </button>
+          </div>
+        `).join('');
+        
+      } catch (error) {
+        console.error('Error loading fillers:', error);
+      }
+    }
+    
+    async function addFiller() {
+      const url = document.getElementById('fillerUrl').value.trim();
+      if (!url) {
+        showToast('Veuillez entrer une URL', true);
+        return;
+      }
+      
+      try {
+        showToast('Ajout du filler...');
+        const response = await fetch('/api/fillers', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url })
+        });
+        
+        const data = await response.json();
+        
+        if (!response.ok) {
+          throw new Error(data.error || 'Erreur');
+        }
+        
+        showToast(data.message);
+        document.getElementById('fillerUrl').value = '';
+        loadFillerProducts();
+        loadCartKeeperStatus();
+      } catch (error) {
+        showToast(error.message, true);
+      }
+    }
+    
+    async function removeFiller(variantId) {
+      try {
+        await fetch(`/api/fillers/${encodeURIComponent(variantId)}`, { method: 'DELETE' });
+        showToast('Filler supprimé');
+        loadFillerProducts();
+        loadCartKeeperStatus();
+      } catch (error) {
+        showToast('Erreur lors de la suppression', true);
+      }
+    }
+    
+    async function startCartKeeper() {
+      try {
+        const response = await fetch('/api/cart-keeper/start', { method: 'POST' });
+        const data = await response.json();
+        
+        if (!response.ok) {
+          throw new Error(data.error || 'Erreur');
+        }
+        
+        showToast('Cart Keeper activé!');
+        loadCartKeeperStatus();
+      } catch (error) {
+        showToast(error.message, true);
+      }
+    }
+    
+    async function stopCartKeeper() {
+      try {
+        await fetch('/api/cart-keeper/stop', { method: 'POST' });
+        showToast('Cart Keeper désactivé');
+        loadCartKeeperStatus();
+      } catch (error) {
+        showToast('Erreur', true);
+      }
+    }
+    
+    async function resetFillerCounts() {
+      try {
+        await fetch('/api/fillers/reset', { method: 'POST' });
+        showToast('Compteurs réinitialisés');
+        loadFillerProducts();
+        loadCartKeeperStatus();
+      } catch (error) {
+        showToast('Erreur', true);
+      }
+    }
+
     loadMonitoredProducts();
     loadHistory();
     updateTokenStatus();
+    loadCartKeeperStatus();
+    loadFillerProducts();
     setInterval(loadMonitoredProducts, 30000);
     setInterval(loadHistory, 30000);
     setInterval(updateTokenStatus, 60000);
+    setInterval(loadCartKeeperStatus, 30000);
   </script>
 </body>
 </html>
