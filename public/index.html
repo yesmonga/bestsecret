@@ -656,9 +656,9 @@
       
       <div style="background: rgba(59, 130, 246, 0.1); border: 1px solid rgba(59, 130, 246, 0.3); border-radius: 8px; padding: 12px; margin: 16px 0;">
         <div style="color: rgba(255,255,255,0.7); font-size: 11px; line-height: 1.5;">
-          💡 <strong>Comment ça marche :</strong><br>
-          Ajoutez des produits "filler" (toujours en stock) ci-dessous.<br>
-          Quand un article est dans votre panier, le Cart Keeper ajoutera automatiquement un filler toutes les 18 min pour réinitialiser le timer du panier (20 min max).
+          💡 <strong>100% Automatique :</strong><br>
+          Configure des produits "filler" (toujours en stock) ci-dessous.<br>
+          Dès qu'un restock est détecté et ajouté au panier → le Cart Keeper s'active automatiquement et ajoute un filler toutes les 18 min pour garder ton panier vivant !
         </div>
       </div>
       
@@ -686,16 +686,7 @@
       
       <div class="divider"></div>
       
-      <div style="display: flex; gap: 10px;">
-        <button class="btn btn-success" id="startCartKeeperBtn" onclick="startCartKeeper()" style="flex: 1;">
-          ▶️ Activer Cart Keeper
-        </button>
-        <button class="btn btn-danger" id="stopCartKeeperBtn" onclick="stopCartKeeper()" style="flex: 1;">
-          ⏹️ Désactiver
-        </button>
-      </div>
-      
-      <button class="btn btn-secondary" onclick="resetFillerCounts()" style="margin-top: 10px; width: 100%;">
+      <button class="btn btn-secondary" onclick="resetFillerCounts()" style="width: 100%;">
         🔄 Réinitialiser les compteurs
       </button>
     </details>
@@ -1157,33 +1148,37 @@
         const data = await response.json();
         
         const statusEl = document.getElementById('cartKeeperStatus');
-        const startBtn = document.getElementById('startCartKeeperBtn');
-        const stopBtn = document.getElementById('stopCartKeeperBtn');
         
         if (data.isRunning) {
           statusEl.innerHTML = `
             <div style="background: rgba(74, 222, 128, 0.1); border: 1px solid rgba(74, 222, 128, 0.3); border-radius: 8px; padding: 12px; margin-bottom: 12px;">
-              <div style="color: #4ade80; font-weight: 500; font-size: 12px;">✅ Cart Keeper actif</div>
+              <div style="color: #4ade80; font-weight: 500; font-size: 12px;">✅ Cart Keeper actif (auto)</div>
               <div style="color: rgba(255,255,255,0.5); font-size: 11px; margin-top: 8px;">
                 🛒 Panier: ${data.cartHasItems ? `<span style="color: #4ade80;">Articles présents (${data.remainingMinutes} min restantes)</span>` : '<span style="color: rgba(255,255,255,0.4);">Vide</span>'}<br>
                 📦 Fillers configurés: ${data.fillerCount}<br>
-                🔄 Fillers ajoutés: ${data.totalFillersAdded}
+                🔄 Fillers ajoutés cette session: ${data.totalFillersAdded}
               </div>
             </div>
           `;
-          startBtn.disabled = true;
-          stopBtn.disabled = false;
+        } else if (data.fillerCount > 0) {
+          statusEl.innerHTML = `
+            <div style="background: rgba(251, 191, 36, 0.1); border: 1px solid rgba(251, 191, 36, 0.3); border-radius: 8px; padding: 12px; margin-bottom: 12px;">
+              <div style="color: #fbbf24; font-weight: 500; font-size: 12px;">⏳ En attente d'un restock</div>
+              <div style="color: rgba(255,255,255,0.5); font-size: 11px; margin-top: 4px;">
+                📦 Fillers configurés: ${data.fillerCount}<br>
+                Le Cart Keeper s'activera automatiquement dès qu'un article sera ajouté au panier
+              </div>
+            </div>
+          `;
         } else {
           statusEl.innerHTML = `
             <div style="background: rgba(248, 113, 113, 0.1); border: 1px solid rgba(248, 113, 113, 0.3); border-radius: 8px; padding: 12px; margin-bottom: 12px;">
-              <div style="color: #f87171; font-weight: 500; font-size: 12px;">⏸️ Cart Keeper inactif</div>
+              <div style="color: #f87171; font-weight: 500; font-size: 12px;">⚠️ Aucun filler configuré</div>
               <div style="color: rgba(255,255,255,0.5); font-size: 11px; margin-top: 4px;">
-                📦 Fillers configurés: ${data.fillerCount}
+                Ajoute des produits filler ci-dessous pour que le Cart Keeper puisse fonctionner
               </div>
             </div>
           `;
-          startBtn.disabled = data.fillerCount === 0;
-          stopBtn.disabled = true;
         }
       } catch (error) {
         console.error('Error loading cart keeper status:', error);
@@ -1269,32 +1264,6 @@
         loadCartKeeperStatus();
       } catch (error) {
         showToast('Erreur lors de la suppression', true);
-      }
-    }
-    
-    async function startCartKeeper() {
-      try {
-        const response = await fetch('/api/cart-keeper/start', { method: 'POST' });
-        const data = await response.json();
-        
-        if (!response.ok) {
-          throw new Error(data.error || 'Erreur');
-        }
-        
-        showToast('Cart Keeper activé!');
-        loadCartKeeperStatus();
-      } catch (error) {
-        showToast(error.message, true);
-      }
-    }
-    
-    async function stopCartKeeper() {
-      try {
-        await fetch('/api/cart-keeper/stop', { method: 'POST' });
-        showToast('Cart Keeper désactivé');
-        loadCartKeeperStatus();
-      } catch (error) {
-        showToast('Erreur', true);
       }
     }
     

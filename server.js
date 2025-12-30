@@ -476,9 +476,12 @@ function onMonitoredProductAddedToCart() {
   cartKeeperState.lastFillerAddTime = null; // Reset filler timer
   saveCartKeeperState();
   
-  // Auto-start cart keeper if fillers are configured
+  // AUTO-START cart keeper if fillers are configured (no manual activation needed)
   if (fillerProducts.length > 0 && !cartKeeperInterval) {
+    console.log(`[${getTimestamp()}] 🛒 Auto-starting Cart Keeper (product added to cart)`);
     startCartKeeper();
+  } else if (fillerProducts.length === 0) {
+    console.log(`[${getTimestamp()}] ⚠️ No filler products configured - Cart Keeper cannot start automatically`);
   }
 }
 
