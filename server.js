@@ -483,6 +483,57 @@ async function clearHistoryFromDB() {
 
 // ============== CART KEEPER FUNCTIONS ==============
 
+// Check cart item count using GetCart API
+async function getCartItemCount() {
+  return new Promise((resolve, reject) => {
+    const postData = JSON.stringify({
+      operationName: "GetCart",
+      query: "query GetCart { cart { __typename totalNumberOfItems } }"
+    });
+
+    const options = {
+      hostname: 'www.bestsecret.com',
+      port: 443,
+      path: '/apps-graphql',
+      method: 'POST',
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(postData),
+        'Authorization': CONFIG.authorization,
+        'User-Agent': 'iOS app/7.114.1 (iOS 26.2) [iPhone18,1]',
+        'apollographql-client-name': 'com.bestsecret.BestSecret-apollo-ios',
+        'apollographql-client-version': '7.114.1-2',
+        'X-APOLLO-OPERATION-TYPE': 'query',
+        'X-APOLLO-OPERATION-NAME': 'GetCart',
+        'X-Correlation-ID': `app-ios-${crypto.randomUUID()}`
+      }
+    };
+
+    const req = https.request(options, (res) => {
+      let data = '';
+      res.on('data', chunk => { data += chunk; });
+      res.on('end', () => {
+        try {
+          const response = JSON.parse(data);
+          const totalItems = response.data?.cart?.totalNumberOfItems || 0;
+          resolve(totalItems);
+        } catch (e) {
+          reject(new Error(`Failed to parse cart count: ${e.message}`));
+        }
+      });
+    });
+
+    req.on('error', reject);
+    req.setTimeout(30000, () => {
+      req.destroy();
+      reject(new Error('Cart count check timeout'));
+    });
+    req.write(postData);
+    req.end();
+  });
+}
+
 // Check cart reservation time using BestSecret API
 async function checkCartReservationTime() {
   return new Promise((resolve, reject) => {
@@ -567,24 +618,34 @@ async function runCartKeeper() {
   }
 
   try {
-    // Check if cart has items and how much time is left
-    const cartInfo = await checkCartReservationTime();
+    // First check if cart has any items using GetCart API
+    const cartItemCount = await getCartItemCount();
     
-    console.log(`[${getTimestamp()}] 🛒 Cart check: ${cartInfo.hasItems ? 'Has items' : 'Empty'}, ${Math.round(cartInfo.remainingMs / 60000)}min remaining`);
+    console.log(`[${getTimestamp()}] 🛒 Cart check: ${cartItemCount} items in cart`);
     
-    if (!cartInfo.hasItems) {
-      // Cart is empty, reset state
-      if (cartKeeperState.cartHasItems) {
-        console.log(`[${getTimestamp()}] 📭 Cart is now empty`);
-        cartKeeperState.cartHasItems = false;
-        cartKeeperState.lastCartAddTime = null;
-        saveCartKeeperState();
-      }
+    if (cartItemCount === 0) {
+      // Cart is empty - STOP cart keeper automatically
+      console.log(`[${getTimestamp()}] 📭 Cart is empty (0 items) - stopping Cart Keeper`);
+      cartKeeperState.cartHasItems = false;
+      cartKeeperState.lastCartAddTime = null;
+      stopCartKeeper();
+      
+      // Send Discord notification that cart keeper stopped
+      await sendCartKeeperStoppedNotification();
       return;
     }
 
-    // Cart has items
+    // Cart has items - continue keeping it alive
     cartKeeperState.cartHasItems = true;
+    
+    // Check reservation time to know when to add filler
+    let cartInfo = { remainingMs: Infinity };
+    try {
+      cartInfo = await checkCartReservationTime();
+      console.log(`[${getTimestamp()}] ⏰ Cart reservation: ${Math.round(cartInfo.remainingMs / 60000)}min remaining`);
+    } catch (e) {
+      console.log(`[${getTimestamp()}] ⚠️ Could not check reservation time, using timer-based approach`);
+    }
     
     // Calculate time since last add (either monitored product or filler)
     const lastAddTime = cartKeeperState.lastFillerAddTime || cartKeeperState.lastCartAddTime;
@@ -619,6 +680,9 @@ async function runCartKeeper() {
       } else {
         console.log(`[${getTimestamp()}] ⚠️ No filler products available`);
       }
+    } else {
+      const minutesUntilNext = Math.round((CART_KEEPER_CONFIG.addFillerAfterMs - timeSinceLastAdd) / 60000);
+      console.log(`[${getTimestamp()}] ⏳ Next filler in ~${minutesUntilNext} minutes`);
     }
   } catch (error) {
     console.error(`[${getTimestamp()}] Cart keeper error:`, error.message);
@@ -636,6 +700,22 @@ function sendCartKeeperNotification(filler, totalFillers) {
       { name: "⏰ Prochain refresh", value: "~18 min", inline: true }
     ],
     footer: { text: "Cart Keeper - Maintient le panier actif" },
+    timestamp: new Date().toISOString()
+  };
+
+  return sendDiscordWebhook({ embeds: [embed] });
+}
+
+// Send Discord notification when cart keeper stops (cart empty)
+function sendCartKeeperStoppedNotification() {
+  const embed = {
+    title: "🛑 Cart Keeper - Arrêté",
+    description: "Le panier est vide (0 articles). Cart Keeper s'est arrêté automatiquement.\n\nIl redémarrera automatiquement dès qu'un restock sera ajouté au panier.",
+    color: 0xf59e0b,
+    fields: [
+      { name: "📊 Session", value: `${cartKeeperState.fillerAddCount} fillers ajoutés`, inline: true }
+    ],
+    footer: { text: "Cart Keeper - Mode veille" },
     timestamp: new Date().toISOString()
   };
 
